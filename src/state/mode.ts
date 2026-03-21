@@ -18,18 +18,21 @@ export function attachSession(chatId: number, sessionId: string): void {
   const state = getChatState(chatId);
   state.mode = "attached";
   state.attachedSessionId = sessionId;
+  state.independentSessionId = null;
 }
 
 export function detachSession(chatId: number): void {
   const state = getChatState(chatId);
   state.mode = "detached";
   state.attachedSessionId = null;
+  state.independentSessionId = null;
 }
 
 export function startIndependentSession(chatId: number, sessionId: string): void {
   const state = getChatState(chatId);
   state.mode = "independent";
   state.independentSessionId = sessionId;
+  state.attachedSessionId = null;
 }
 
 export function getMode(chatId: number): SessionMode {

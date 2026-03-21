@@ -32,6 +32,7 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
   let pendingResolve: (() => void) | null = null;
   let pendingReject: ((err: unknown) => void) | null = null;
   let timerId: ReturnType<typeof setTimeout> | null = null;
+  let isRunning = false;
 
   function clearTimer(): void {
     if (timerId !== null) {
@@ -64,12 +65,15 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
 
     if (fn === null) return;
 
-    lastExecutionTime = Date.now();
+    isRunning = true;
     try {
       await fn();
       resolve?.();
     } catch (err: unknown) {
       reject?.(err);
+    } finally {
+      isRunning = false;
+      lastExecutionTime = Date.now();
     }
   }
 
@@ -78,9 +82,13 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
     const elapsed = now - lastExecutionTime;
 
     // First call ever, or the interval has already elapsed → run immediately.
-    if (lastExecutionTime === 0 || elapsed >= opts.intervalMs) {
+    if (!isRunning && (lastExecutionTime === 0 || elapsed >= opts.intervalMs)) {
       lastExecutionTime = now;
-      return fn();
+      isRunning = true;
+      return fn().finally(() => {
+        isRunning = false;
+        lastExecutionTime = Date.now();
+      });
     }
 
     // Drop any existing pending call (resolve it as a silent no-op) and

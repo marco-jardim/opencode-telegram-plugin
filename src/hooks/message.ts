@@ -2,7 +2,6 @@ import type { Api, RawApi } from "grammy";
 import {
   getAllChatIds,
   getChatState,
-  resetStream,
   type ChatState,
 } from "../state/store.js";
 import { getActiveSessionId } from "../state/mode.js";
@@ -57,9 +56,8 @@ export function handleMessageUpdated(
   const rawText = textParts.map((p) => p.text ?? "").join("");
   if (!rawText.trim()) return;
 
-  const lastPart = textParts[textParts.length - 1];
   const isFinal =
-    lastPart?.state === "complete" ||
+    textParts.some((p) => p.state === "complete") &&
     textParts.every((p) => !p.state || p.state === "complete");
 
   const html = markdownToTelegramHtml(rawText);
@@ -111,8 +109,11 @@ async function processStreamForChat(
   // ── Initial send ──────────────────────────────────────────────────────────
   if (
     chatState.stream.state === "IDLE" ||
-    chatState.stream.state === "PENDING_SEND"
+    chatState.stream.state === "PENDING_SEND" ||
+    chatState.stream.state === "FINAL"
   ) {
+    // Lock immediately to prevent duplicate sends on concurrent events
+    chatState.stream.state = "PENDING_SEND";
     if (!chatState.typingStop) {
       chatState.typingStop = startTyping(api, chatId);
     }
@@ -125,10 +126,9 @@ async function processStreamForChat(
     );
 
     if (!firstResult.ok) {
-      if (firstResult.reason === "bot blocked") {
-        chatState.typingStop?.();
-        chatState.typingStop = null;
-      }
+      chatState.typingStop?.();
+      chatState.typingStop = null;
+      chatState.stream.state = "IDLE";
       return;
     }
 
@@ -161,11 +161,13 @@ async function processStreamForChat(
 
     chatState.stream.state = "EDITING";
 
+    const capturedGeneration = chatState.stream.streamGeneration;
     const doEdit = async (): Promise<void> => {
       // Guard: bail if the stream was reset between scheduling and execution
       if (
-        chatState.stream.state !== "EDITING" &&
-        chatState.stream.state !== "SENT"
+        chatState.stream.streamGeneration !== capturedGeneration ||
+        (chatState.stream.state !== "EDITING" &&
+         chatState.stream.state !== "SENT")
       ) {
         return;
       }
@@ -210,6 +212,15 @@ async function processStreamForChat(
           }
         }
       }
+
+      // Delete stale overflow messages if text shrank
+      const excessStart = editChunks.length - 1;
+      if (excessStart < chatState.stream.chunks.length) {
+        for (let j = chatState.stream.chunks.length - 1; j >= excessStart; j--) {
+          void safeSend(() => api.deleteMessage(chatId, chatState.stream.chunks[j]));
+        }
+        chatState.stream.chunks.length = Math.max(excessStart, 0);
+      }
     };
 
     if (isFinal) {
@@ -245,7 +256,6 @@ async function finalizeStream(
     chatThrottles.delete(chatId);
   }
 
-  // Transition FINAL → IDLE
+  // Mark stream as finalized — stays FINAL until a new stream starts
   chatState.stream.state = "FINAL";
-  resetStream(chatId);
 }

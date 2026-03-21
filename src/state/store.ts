@@ -7,6 +7,7 @@ export interface StreamTracker {
   sessionId: string | null;
   messageIdOC: string | null;
   chunks: number[];
+  streamGeneration: number;
 }
 
 export interface PendingPermission {
@@ -49,6 +50,7 @@ function makeDefaultStream(): StreamTracker {
     sessionId: null,
     messageIdOC: null,
     chunks: [],
+    streamGeneration: 0,
   };
 }
 
@@ -83,7 +85,16 @@ export function getAllChatIds(): number[] {
 
 export function resetStream(chatId: number): void {
   const state = getChatState(chatId);
+  const nextGen = state.stream.streamGeneration + 1;
   state.stream = makeDefaultStream();
+  state.stream.streamGeneration = nextGen;
+}
+
+export function cleanupChatStream(chatId: number): void {
+  const state = getChatState(chatId);
+  state.typingStop?.();
+  state.typingStop = null;
+  resetStream(chatId);
 }
 
 function generateKey(): string {

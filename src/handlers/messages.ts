@@ -123,7 +123,7 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
     .catch(async (err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       await safeSend(() =>
-        ctx.reply(`❌ Error sending prompt: ${escapeHtml(msg)}`),
+        ctx.reply(`❌ Error sending prompt: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
       );
     });
 }

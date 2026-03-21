@@ -2,7 +2,7 @@ import { GrammyError, HttpError } from "grammy";
 
 export type SendResult =
   | { ok: true; messageId?: number }
-  | { ok: false; retry: boolean; reason: string };
+  | { ok: false; retry: boolean; reason: string; retryAfterMs?: number };
 
 /**
  * Returns true when the error is a Telegram "message is not modified" error.
@@ -74,7 +74,9 @@ export async function safeSend(
 
     if (err instanceof GrammyError) {
       if (err.error_code === 429) {
-        return { ok: false, retry: true, reason: "rate limited" };
+        const retryAfter = (err as any).parameters?.retry_after;
+        const retryAfterMs = typeof retryAfter === "number" ? retryAfter * 1000 : undefined;
+        return { ok: false, retry: true, reason: "rate limited", retryAfterMs };
       }
       if (isParseError(err)) {
         return { ok: false, retry: true, reason: "parse error" };
@@ -89,7 +91,7 @@ export async function safeSend(
     }
 
     if (err instanceof HttpError) {
-      return { ok: false, retry: false, reason: err.message };
+      return { ok: false, retry: true, reason: err.message };
     }
 
     if (err instanceof Error) {

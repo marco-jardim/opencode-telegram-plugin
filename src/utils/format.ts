@@ -5,7 +5,8 @@ export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /**
@@ -49,16 +50,16 @@ export function markdownToTelegramHtml(md: string): string {
   // Step 3: Convert Markdown inline formatting
 
   // Bold: **text**
-  text = text.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  text = text.replace(/\*\*([\s\S]+?)\*\*/g, "<b>$1</b>");
 
   // Italic: *text* (single asterisk, content must not contain * or newline)
   text = text.replace(/\*([^*\n]+)\*/g, "<i>$1</i>");
 
   // Strikethrough: ~~text~~
-  text = text.replace(/~~(.+?)~~/g, "<s>$1</s>");
+  text = text.replace(/~~([\s\S]+?)~~/g, "<s>$1</s>");
 
   // Links: [text](url)
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  text = text.replace(/\[([^\]]+)\]\(((?:[^()]*|\([^()]*\))*)\)/g, '<a href="$2">$1</a>');
 
   // Step 4: Headers (# through ######) → <b>header text</b>
   text = text.replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>");
@@ -114,5 +115,6 @@ export function stripHtml(text: string): string {
     .replace(/<[^>]+>/g, "")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"');
 }

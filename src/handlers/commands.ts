@@ -184,7 +184,7 @@ export async function attachCommand(ctx: Context): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
-      ctx.reply(`❌ Failed to list sessions: ${escapeHtml(msg)}`),
+      ctx.reply(`❌ Failed to list sessions: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
   }
 }
@@ -221,7 +221,7 @@ export async function newCommand(ctx: Context): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
-      ctx.reply(`❌ Failed to create session: ${escapeHtml(msg)}`),
+      ctx.reply(`❌ Failed to create session: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
   }
 }
@@ -261,7 +261,7 @@ export async function sessionsCommand(ctx: Context): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
-      ctx.reply(`❌ Failed to list sessions: ${escapeHtml(msg)}`),
+      ctx.reply(`❌ Failed to list sessions: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
   }
 }
@@ -316,7 +316,7 @@ export async function switchCommand(ctx: Context): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
-      ctx.reply(`❌ Failed to list sessions: ${escapeHtml(msg)}`),
+      ctx.reply(`❌ Failed to list sessions: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
   }
 }
@@ -358,7 +358,7 @@ export async function modelCommand(ctx: Context): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
-      ctx.reply(`❌ Failed to fetch models: ${escapeHtml(msg)}`),
+      ctx.reply(`❌ Failed to fetch models: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
   }
 }
@@ -409,7 +409,7 @@ export async function abortCommand(ctx: Context): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
-      ctx.reply(`❌ Failed to abort: ${escapeHtml(msg)}`),
+      ctx.reply(`❌ Failed to abort: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
   }
 }

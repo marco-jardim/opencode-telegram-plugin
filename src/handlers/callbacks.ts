@@ -1,5 +1,5 @@
 import type { Context } from "grammy";
-import { resolveCallback } from "../state/store.js";
+import { resolveCallback, getChatState } from "../state/store.js";
 import { attachSession } from "../state/mode.js";
 import { safeSend } from "../utils/safeSend.js";
 import { escapeHtml } from "../utils/format.js";
@@ -107,6 +107,7 @@ export async function handleCallback(ctx: Context): Promise<void> {
           body: {},
         });
 
+        getChatState(chatId).pendingPermissions.delete(permissionId);
         await safeSend(() => ctx.answerCallbackQuery({ text: "✅ Approved" }));
         await safeEditText(
           ctx,
@@ -127,6 +128,7 @@ export async function handleCallback(ctx: Context): Promise<void> {
           return;
         }
 
+        getChatState(chatId).pendingPermissions.delete(permissionId);
         await safeSend(() => ctx.answerCallbackQuery({ text: "❌ Denied" }));
         await safeEditText(
           ctx,

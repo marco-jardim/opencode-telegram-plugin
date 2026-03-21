@@ -1,5 +1,5 @@
 import type { Api, RawApi } from "grammy";
-import { getAllChatIds, getChatState } from "../state/store.js";
+import { getAllChatIds, getChatState, cleanupChatStream } from "../state/store.js";
 import { getActiveSessionId } from "../state/mode.js";
 import { escapeHtml } from "../utils/format.js";
 import { safeSend } from "../utils/safeSend.js";
@@ -58,11 +58,8 @@ export function handleSessionIdle(
   const { api } = ctx;
 
   for (const chatId of attachedChatIds(sessionID)) {
-    const cs = getChatState(chatId);
-
-    // Stop any active typing indicator
-    cs.typingStop?.();
-    cs.typingStop = null;
+    // Clean up stream state + typing indicator
+    cleanupChatStream(chatId);
 
     void safeSend(() =>
       api.sendMessage(chatId, "💤 <i>Session idle</i>", {
@@ -84,10 +81,8 @@ export function handleSessionError(
 
   // Errors go to all matching chats regardless of mode
   for (const chatId of matchingChatIds(sessionID)) {
-    const cs = getChatState(chatId);
-
-    cs.typingStop?.();
-    cs.typingStop = null;
+    // Clean up stream state + typing indicator
+    cleanupChatStream(chatId);
 
     void safeSend(() =>
       api.sendMessage(

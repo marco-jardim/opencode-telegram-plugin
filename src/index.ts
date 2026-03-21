@@ -35,9 +35,7 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   }
 
   const allowedUsers = process.env["TELEGRAM_ALLOWED_USERS"] ?? "";
-  const editIntervalMs = Number(
-    process.env["TELEGRAM_EDIT_INTERVAL_MS"] ?? "2500",
-  );
+  const editIntervalMs = Number(process.env["TELEGRAM_EDIT_INTERVAL_MS"]) || 2500;
 
   // ── Persistent mapping store ──────────────────────────────────────────
   const dataDir = `${directory}/.opencode/telegram`;
@@ -54,8 +52,6 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   };
 
   // ── Start polling ─────────────────────────────────────────────────────
-  const abortController = new AbortController();
-
   // Start in the background — don't await (it blocks until stopped).
   void bot.start({
     drop_pending_updates: true,
@@ -75,28 +71,33 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   });
 
   // ── Graceful shutdown ─────────────────────────────────────────────────
+  let stopping = false;
   function shutdown(): void {
-    abortController.abort();
+    if (stopping) return;
+    stopping = true;
     bot.stop().catch(() => undefined);
   }
 
   process.on("SIGINT", shutdown);
-  process.on("exit", shutdown);
 
   // ── Event dispatcher ──────────────────────────────────────────────────
   return {
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
-      const props = (event.properties ?? {}) as Record<string, unknown>;
+      if (!event.properties || typeof event.properties !== "object") return;
+      const props = event.properties as Record<string, unknown>;
 
       switch (event.type) {
         // ── Message streaming ──────────────────────────────────────────
         case "message.updated":
-        case "message.part.updated":
+        case "message.part.updated": {
+          // Guard: ensure parts is an array before passing to handler
+          if (!Array.isArray(props.parts)) break;
           handleMessageUpdated(
             event as Parameters<typeof handleMessageUpdated>[0],
             hookCtx,
           );
           break;
+        }
 
         // ── Session lifecycle ──────────────────────────────────────────
         case "session.created":

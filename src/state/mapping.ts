@@ -1,5 +1,6 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { randomBytes } from "node:crypto";
 
 export interface ChatMapping {
   chatId: number;
@@ -23,9 +24,17 @@ export function initMapping(dataDir: string): void {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return;
 
-    for (const item of parsed as ChatMapping[]) {
-      if (typeof item.chatId === "number") {
-        mappings.set(item.chatId, item);
+    for (const item of parsed) {
+      if (item != null && typeof item === "object" && typeof (item as Record<string, unknown>).chatId === "number") {
+        const m = item as Record<string, unknown>;
+        const chatId = m.chatId as number;
+        mappings.set(chatId, {
+          chatId,
+          lastSessionId: typeof m.lastSessionId === "string" ? m.lastSessionId : null,
+          username: typeof m.username === "string" ? m.username : null,
+          firstSeen: typeof m.firstSeen === "number" ? m.firstSeen : Date.now(),
+          lastActive: typeof m.lastActive === "number" ? m.lastActive : Date.now(),
+        });
       }
     }
   } catch {
@@ -50,28 +59,54 @@ export function setMapping(chatId: number, data: Partial<ChatMapping>): void {
     });
   } else {
     mappings.set(chatId, {
-      chatId,
       lastSessionId: null,
       username: null,
       firstSeen: now,
-      lastActive: now,
       ...data,
+      chatId,
+      lastActive: now,
     });
   }
 
-  saveMappings();
+  scheduleSave();
 }
 
 export function getAllMappings(): ChatMapping[] {
   return Array.from(mappings.values());
 }
 
-export function saveMappings(): void {
+function saveMappingsSync(): void {
   if (!filePath) return;
 
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
 
-  const data = JSON.stringify(Array.from(mappings.values()), null, 2);
-  writeFileSync(filePath, data, "utf-8");
+  const json = JSON.stringify(Array.from(mappings.values()), null, 2);
+  const tmpPath = filePath + "." + randomBytes(4).toString("hex") + ".tmp";
+  try {
+    writeFileSync(tmpPath, json, "utf-8");
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    // Clean up temp file on failure
+    try { if (existsSync(tmpPath)) writeFileSync(tmpPath, "", "utf-8"); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleSave(): void {
+  if (saveTimer !== null) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      saveMappingsSync();
+    } catch {
+      // Non-fatal — data will be retried on next write
+    }
+  }, 500);
+}
+
+export function saveMappings(): void {
+  scheduleSave();
 }
