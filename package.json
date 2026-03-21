@@ -1,0 +1,29 @@
+{
+  "name": "opencode-telegram-plugin",
+  "version": "0.1.0",
+  "description": "Telegram bot plugin for OpenCode — remote control and independent sessions from your phone",
+  "type": "module",
+  "main": "./src/index.ts",
+  "license": "GPL-3.0-or-later",
+  "keywords": [
+    "opencode",
+    "telegram",
+    "bot",
+    "plugin",
+    "remote-control",
+    "ai",
+    "coding-assistant"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/marco-jardim/opencode-telegram-plugin.git"
+  },
+  "author": "marco-jardim",
+  "dependencies": {
+    "grammy": "^1.35.0",
+    "@grammyjs/auto-retry": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}
