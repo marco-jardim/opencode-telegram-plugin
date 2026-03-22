@@ -264,6 +264,7 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
   }
 
   // Start periodic edit timer
+  void sctx.api.sendMessage(chatId, "[DIAG] Starting edit timer, interval=" + sctx.editIntervalMs + "ms").catch(() => {});
   sctx.editTimer = setInterval(() => {
     void doEdit(chatId, sctx);
   }, sctx.editIntervalMs);
@@ -274,15 +275,29 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
 // ---------------------------------------------------------------------------
 
 async function doEdit(chatId: number, sctx: ChatStreamCtx): Promise<void> {
-  if (sctx.editing || sctx.sending) return;
+  if (sctx.editing) {
+    void sctx.api.sendMessage(chatId, "[DIAG] doEdit skip: editing=true").catch(() => {});
+    return;
+  }
+  if (sctx.sending) {
+    void sctx.api.sendMessage(chatId, "[DIAG] doEdit skip: sending=true").catch(() => {});
+    return;
+  }
   sctx.editing = true;
 
   try {
     const chatState = getChatState(chatId);
     const msgId = chatState.stream.messageId;
-    if (msgId === null) return;
+    if (msgId === null) {
+      void sctx.api.sendMessage(chatId, "[DIAG] doEdit skip: msgId=null").catch(() => {});
+      return;
+    }
 
-    if (sctx.latestRawText === chatState.stream.lastSentText) return;
+    if (sctx.latestRawText === chatState.stream.lastSentText) {
+      return; // silent no-op, text hasn't changed
+    }
+
+    void sctx.api.sendMessage(chatId, "[DIAG] doEdit: text changed, len=" + sctx.latestRawText.length + " lastSent=" + chatState.stream.lastSentText.length).catch(() => {});
 
     const editChunks = chunkMessage(sctx.latestHtml);
     if (editChunks.length === 0) return;
