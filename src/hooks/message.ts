@@ -108,6 +108,11 @@ interface ChatStreamCtx {
 
 const chatStreamCtx = new Map<number, ChatStreamCtx>();
 
+// Check if a given sctx is still the active context for a chat
+function isActive(chatId: number, sctx: ChatStreamCtx): boolean {
+  return chatStreamCtx.get(chatId) === sctx;
+}
+
 // ---------------------------------------------------------------------------
 // Handle message.part.delta — incremental streaming text
 // ---------------------------------------------------------------------------
@@ -236,6 +241,12 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
     }
   }
 
+  // After await: check if this context was cleaned up while we were sending
+  if (!isActive(chatId, sctx)) {
+    sctx.sending = false;
+    return;
+  }
+
   chatState.stream.messageId = sentMsg.message_id;
   chatState.stream.state = "SENT";
   chatState.stream.lastSentText = sctx.latestRawText;
@@ -243,6 +254,7 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
 
   // Send overflow chunks
   for (let i = 1; i < chunks.length; i++) {
+    if (!isActive(chatId, sctx)) return;
     const r = await safeSend(() =>
       sctx.api.sendMessage(chatId, chunks[i], { parse_mode: "HTML" }),
     );
@@ -250,6 +262,9 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
       chatState.stream.chunks.push(r.messageId);
     }
   }
+
+  // After sending overflow: recheck
+  if (!isActive(chatId, sctx)) return;
 
   // If already final, do one last edit and stop
   if (sctx.isFinal) {
@@ -260,10 +275,19 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
     return;
   }
 
-  // Start periodic edit timer
+  // Start periodic edit timer (only if still active)
+  if (!isActive(chatId, sctx)) return;
   sctx.editTimer = setInterval(() => {
+    if (!isActive(chatId, sctx)) {
+      clearInterval(sctx.editTimer!);
+      sctx.editTimer = null;
+      return;
+    }
     void doEdit(chatId, sctx);
   }, sctx.editIntervalMs);
+  if (typeof sctx.editTimer === "object" && "unref" in sctx.editTimer) {
+    sctx.editTimer.unref();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +296,7 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
 
 async function doEdit(chatId: number, sctx: ChatStreamCtx): Promise<void> {
   if (sctx.editing || sctx.sending) return;
+  if (!isActive(chatId, sctx)) return;
   sctx.editing = true;
 
   try {
@@ -340,17 +365,23 @@ async function doFinalEdit(chatId: number, sctx: ChatStreamCtx): Promise<void> {
     sctx.editTimer = null;
   }
 
-  // Wait for sending/editing to finish
+  // Wait for sending/editing to finish (bail if context was cleaned up externally)
+  let waitCount = 0;
   while (sctx.editing || sctx.sending) {
+    if (!isActive(chatId, sctx) || ++waitCount > 200) return; // 200 × 50ms = 10s max
     await new Promise((r) => setTimeout(r, 50));
   }
+
+  if (!isActive(chatId, sctx)) return;
 
   const chatState = getChatState(chatId);
   if (sctx.latestRawText !== chatState.stream.lastSentText && chatState.stream.messageId !== null) {
     await doEdit(chatId, sctx);
   }
 
-  cleanupStream(chatId);
+  if (isActive(chatId, sctx)) {
+    cleanupStream(chatId);
+  }
 }
 
 // ---------------------------------------------------------------------------
