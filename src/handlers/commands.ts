@@ -327,7 +327,16 @@ export async function switchCommand(ctx: Context): Promise<void> {
 
 export async function modelCommand(ctx: Context): Promise<void> {
   try {
-    const { data } = await getClient().config.providers();
+    const result = await getClient().config.providers();
+    const { data } = result;
+
+    // Diagnostic: dump raw shape
+    await safeSend(() =>
+      ctx.reply(
+        `[DIAG] result keys: ${Object.keys(result ?? {}).join(", ")}\ndata keys: ${Object.keys(data ?? {}).join(", ")}\ndata?.providers type: ${typeof (data as any)?.providers}\ndata?.providers length: ${Array.isArray((data as any)?.providers) ? (data as any).providers.length : "N/A"}\nJSON preview: ${JSON.stringify(data, null, 0)?.substring(0, 500)}`,
+      ),
+    );
+
     const providers = data?.providers ?? [];
 
     if (providers.length === 0) {
