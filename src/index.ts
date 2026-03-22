@@ -182,6 +182,15 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   initMapping(dataDir);
 
   // ── Create bot ────────────────────────────────────────────────────────
+  const maskedToken = config.botToken.slice(0, 6) + "..." + config.botToken.slice(-4);
+  await client.app.log({
+    body: {
+      service: "telegram-plugin",
+      level: "info",
+      message: "Initializing Telegram bot (token: " + maskedToken + ", source: " + config.tokenSource + ", allowed_users: " + (config.allowedUsers || "all") + ")",
+    },
+  });
+
   const bot = createBot({
     token: config.botToken,
     allowedUsers: config.allowedUsers,
@@ -202,7 +211,7 @@ export const TelegramPlugin: Plugin = async (ctx) => {
         body: {
           service: "telegram-plugin",
           level: "info",
-          message: `Telegram bot started (token from ${config.tokenSource}).`,
+          message: "Telegram bot started (token from " + config.tokenSource + ").",
         },
       });
     },
@@ -210,6 +219,15 @@ export const TelegramPlugin: Plugin = async (ctx) => {
       "message",
       "callback_query",
     ],
+  }).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    void client.app.log({
+      body: {
+        service: "telegram-plugin",
+        level: "error",
+        message: "Telegram bot failed to start: " + msg,
+      },
+    });
   });
 
   // ── Graceful shutdown ─────────────────────────────────────────────────
