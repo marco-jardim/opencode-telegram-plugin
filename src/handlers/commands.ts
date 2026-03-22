@@ -407,7 +407,17 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
   // /model (no args) — list available models
   try {
-    const { data } = await getClient().config.providers();
+    const result = await getClient().config.providers();
+    const { data } = result;
+
+    // Diagnostic: show the "default" field
+    const defaultField = (data as any)?.default;
+    if (defaultField) {
+      await safeSend(() =>
+        ctx.reply(`[DIAG] default: ${JSON.stringify(defaultField, null, 2)?.substring(0, 1000)}`, { parse_mode: undefined }),
+      );
+    }
+
     const providers = data?.providers ?? [];
 
     if (providers.length === 0) {
