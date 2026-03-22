@@ -3,6 +3,7 @@ import { getAllChatIds, getChatState, cleanupChatStream } from "../state/store.j
 import { getActiveSessionId } from "../state/mode.js";
 import { escapeHtml } from "../utils/format.js";
 import { safeSend } from "../utils/safeSend.js";
+import { cleanupStream } from "./message.js";
 
 export interface HookContext {
   api: Api<RawApi>;
@@ -58,7 +59,8 @@ export function handleSessionIdle(
   const { api } = ctx;
 
   for (const chatId of matchingChatIds(sessionID)) {
-    // Clean up stream state + typing indicator
+    // Clean up message streaming timer + stream state + typing indicator
+    cleanupStream(chatId);
     cleanupChatStream(chatId);
 
     void safeSend(() =>
@@ -81,7 +83,7 @@ export function handleSessionError(
 
   // Errors go to all matching chats regardless of mode
   for (const chatId of matchingChatIds(sessionID)) {
-    // Clean up stream state + typing indicator
+    cleanupStream(chatId);
     cleanupChatStream(chatId);
 
     void safeSend(() =>

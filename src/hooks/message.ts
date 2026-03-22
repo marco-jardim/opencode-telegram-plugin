@@ -222,24 +222,21 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
     return;
   }
 
-  let firstResult = await safeSend(() =>
-    sctx.api.sendMessage(chatId, chunks[0], { parse_mode: "HTML" }),
-  );
-
-  // Fallback to plain text if HTML parse fails
-  if (!firstResult.ok && firstResult.reason === "parse error") {
-    firstResult = await safeSend(() =>
-      sctx.api.sendMessage(chatId, stripHtml(sctx.latestHtml)),
-    );
+  let sentMsg: Awaited<ReturnType<typeof sctx.api.sendMessage>> | null = null;
+  try {
+    sentMsg = await sctx.api.sendMessage(chatId, chunks[0], { parse_mode: "HTML" });
+  } catch {
+    // Fallback to plain text
+    try {
+      sentMsg = await sctx.api.sendMessage(chatId, stripHtml(sctx.latestHtml));
+    } catch {
+      sctx.sending = false;
+      cleanupStream(chatId);
+      return;
+    }
   }
 
-  if (!firstResult.ok) {
-    sctx.sending = false;
-    cleanupStream(chatId);
-    return;
-  }
-
-  chatState.stream.messageId = firstResult.messageId ?? null;
+  chatState.stream.messageId = sentMsg.message_id;
   chatState.stream.state = "SENT";
   chatState.stream.lastSentText = sctx.latestRawText;
   sctx.sending = false;
@@ -264,7 +261,6 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
   }
 
   // Start periodic edit timer
-  void sctx.api.sendMessage(chatId, "[DIAG] Starting edit timer, interval=" + sctx.editIntervalMs + "ms").catch(() => {});
   sctx.editTimer = setInterval(() => {
     void doEdit(chatId, sctx);
   }, sctx.editIntervalMs);
@@ -275,29 +271,14 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
 // ---------------------------------------------------------------------------
 
 async function doEdit(chatId: number, sctx: ChatStreamCtx): Promise<void> {
-  if (sctx.editing) {
-    void sctx.api.sendMessage(chatId, "[DIAG] doEdit skip: editing=true").catch(() => {});
-    return;
-  }
-  if (sctx.sending) {
-    void sctx.api.sendMessage(chatId, "[DIAG] doEdit skip: sending=true").catch(() => {});
-    return;
-  }
+  if (sctx.editing || sctx.sending) return;
   sctx.editing = true;
 
   try {
     const chatState = getChatState(chatId);
     const msgId = chatState.stream.messageId;
-    if (msgId === null) {
-      void sctx.api.sendMessage(chatId, "[DIAG] doEdit skip: msgId=null").catch(() => {});
-      return;
-    }
-
-    if (sctx.latestRawText === chatState.stream.lastSentText) {
-      return; // silent no-op, text hasn't changed
-    }
-
-    void sctx.api.sendMessage(chatId, "[DIAG] doEdit: text changed, len=" + sctx.latestRawText.length + " lastSent=" + chatState.stream.lastSentText.length).catch(() => {});
+    if (msgId === null) return;
+    if (sctx.latestRawText === chatState.stream.lastSentText) return;
 
     const editChunks = chunkMessage(sctx.latestHtml);
     if (editChunks.length === 0) return;
@@ -376,7 +357,7 @@ async function doFinalEdit(chatId: number, sctx: ChatStreamCtx): Promise<void> {
 // Cleanup
 // ---------------------------------------------------------------------------
 
-function cleanupStream(chatId: number): void {
+export function cleanupStream(chatId: number): void {
   const sctx = chatStreamCtx.get(chatId);
   if (sctx?.editTimer) {
     clearInterval(sctx.editTimer);

@@ -53,14 +53,10 @@ export async function safeSend(
 
     // Extract message_id when the API returns a Message object.
     let messageId: number | undefined;
-    if (
-      result !== null &&
-      typeof result === "object" &&
-      "message_id" in result
-    ) {
-      const id = (result as Record<string, unknown>).message_id;
-      if (typeof id === "number") {
-        messageId = id;
+    if (result !== null && typeof result === "object") {
+      const obj = result as Record<string, unknown>;
+      if ("message_id" in obj && typeof obj.message_id === "number") {
+        messageId = obj.message_id;
       }
     }
 
