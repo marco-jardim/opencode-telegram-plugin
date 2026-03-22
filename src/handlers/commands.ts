@@ -22,11 +22,55 @@ interface SessionSummary {
   createdAt: string;
 }
 
+interface FileDiff {
+  file: string;
+  additions: number;
+  deletions: number;
+  status?: "added" | "deleted" | "modified";
+}
+
+interface MessageInfo {
+  id: string;
+  role: string;
+  createdAt?: string;
+}
+
+interface MessagePart {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+interface SessionData {
+  id: string;
+  title?: string;
+  share?: { url: string };
+}
+
+interface AssistantMessage {
+  parts?: MessagePart[];
+}
+
+interface OpenCodeCommand {
+  name: string;
+  description?: string;
+  source?: string;
+}
+
 interface OpenCodeClient {
   session: {
     list(): Promise<{ data: SessionSummary[] }>;
     create(params: { body: { title: string } }): Promise<{ data: { id: string } }>;
     abort(params: { path: { id: string } }): Promise<boolean>;
+    shell(params: { path: { id: string }; body: { agent: string; command: string } }): Promise<{ data: AssistantMessage }>;
+    diff(params: { path: { id: string }; query?: { messageID?: string } }): Promise<{ data: FileDiff[] }>;
+    share(params: { path: { id: string } }): Promise<{ data: SessionData }>;
+    unshare(params: { path: { id: string } }): Promise<{ data: SessionData }>;
+    revert(params: { path: { id: string }; body?: { messageID: string } }): Promise<{ data: SessionData }>;
+    unrevert(params: { path: { id: string } }): Promise<{ data: SessionData }>;
+    summarize(params: { path: { id: string }; body?: { providerID: string; modelID: string } }): Promise<{ data: boolean }>;
+    messages(params: { path: { id: string }; query?: { limit?: number } }): Promise<{ data: Array<{ info: MessageInfo; parts: MessagePart[] }> }>;
+    command(params: { path: { id: string }; body: { command: string; arguments: string } }): Promise<{ data: unknown }>;
   };
   config: {
     providers(): Promise<{
@@ -38,6 +82,9 @@ interface OpenCodeClient {
         }>;
       };
     }>;
+  };
+  command: {
+    list(): Promise<{ data: OpenCodeCommand[] }>;
   };
 }
 
@@ -68,7 +115,11 @@ const HELP_TEXT = `
 
 <b>While in a Session</b>
 Just send a message to prompt OpenCode
+<code>!command</code>     — Run a shell command (e.g. <code>!git status</code>)
+/shell &lt;cmd&gt; — Run a shell command
 /abort       — Abort the current running operation
+/diff        — Show changed files in current session
+/messages    — Show last 5 messages from session
 
 <b>Model &amp; Config</b>
 /model              — List available models
@@ -77,6 +128,17 @@ Just send a message to prompt OpenCode
 /effort [low|medium|high] — Set reasoning effort (default: high)
 /status      — Show current bot status
 /help        — Show this help message
+
+<b>Permissions</b>
+Reply <code>YES</code>, <code>NO</code>, or <code>ALWAYS</code> to a permission message
+/pending     — List pending permission requests
+
+<b>OpenCode Commands</b>
+/oc_undo     — Undo last message + file changes
+/oc_redo     — Redo undone changes
+/oc_compact  — Summarize/compact the session
+/oc_share    — Share the session (get URL)
+/commands    — List all available OpenCode commands
 `.trim();
 
 /**
@@ -558,5 +620,414 @@ export async function abortCommand(ctx: Context): Promise<void> {
     await safeSend(() =>
       ctx.reply(`❌ Failed to abort: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shell command — /shell <cmd> or !<cmd>
+// ---------------------------------------------------------------------------
+
+export async function shellCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const command = typeof ctx.match === "string" ? ctx.match.trim() : "";
+  if (!command) {
+    await safeSend(() =>
+      ctx.reply("Usage: <code>/shell command</code>\nExample: <code>/shell git status</code>\n\nOr use the <code>!</code> prefix: <code>!git status</code>", { parse_mode: "HTML" }),
+    );
+    return;
+  }
+
+  await executeShell(ctx, chatId, command);
+}
+
+/**
+ * Execute a shell command in the current session and send the result.
+ * Shared between /shell and !<cmd>.
+ */
+export async function executeShell(ctx: Context, chatId: number, command: string): Promise<void> {
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() =>
+      ctx.reply("No active session. Use /attach or /new first."),
+    );
+    return;
+  }
+
+  try {
+    await ctx.api.sendChatAction(chatId, "typing");
+  } catch { /* non-fatal */ }
+
+  try {
+    const { data } = await getClient().session.shell({
+      path: { id: sessionId },
+      body: { agent: "", command },
+    });
+
+    const parts = data?.parts ?? [];
+    const textParts = parts
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text!);
+
+    const output = textParts.join("\n").trim();
+
+    if (!output) {
+      await safeSend(() =>
+        ctx.reply(`<code>$ ${escapeHtml(command)}</code>\n<i>(no output)</i>`, { parse_mode: "HTML" }),
+      );
+      return;
+    }
+
+    // Chunk output if needed (4000 char limit for safety)
+    const header = `<code>$ ${escapeHtml(command)}</code>\n`;
+    const MAX_LEN = 4000 - header.length;
+
+    if (output.length <= MAX_LEN) {
+      await safeSend(() =>
+        ctx.reply(`${header}<pre>${escapeHtml(output)}</pre>`, { parse_mode: "HTML" }),
+      );
+    } else {
+      // Send header first, then chunks
+      await safeSend(() =>
+        ctx.reply(header, { parse_mode: "HTML" }),
+      );
+
+      let remaining = output;
+      while (remaining.length > 0) {
+        const chunk = remaining.slice(0, 4000);
+        remaining = remaining.slice(4000);
+        await safeSend(() =>
+          ctx.reply(`<pre>${escapeHtml(chunk)}</pre>`, { parse_mode: "HTML" }),
+        );
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Shell error: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /diff — Show changed files
+// ---------------------------------------------------------------------------
+
+export async function diffCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() => ctx.reply("No active session. Use /attach or /new first."));
+    return;
+  }
+
+  try {
+    const { data: diffs } = await getClient().session.diff({
+      path: { id: sessionId },
+    });
+
+    if (!diffs || diffs.length === 0) {
+      await safeSend(() => ctx.reply("No file changes in this session."));
+      return;
+    }
+
+    const statusIcon: Record<string, string> = {
+      added: "🟢",
+      deleted: "🔴",
+      modified: "🟡",
+    };
+
+    const lines = diffs.map((d) => {
+      const icon = statusIcon[d.status ?? "modified"] ?? "🟡";
+      const stats = `<code>+${d.additions} -${d.deletions}</code>`;
+      return `${icon} ${stats} ${escapeHtml(d.file)}`;
+    });
+
+    const totalAdd = diffs.reduce((s, d) => s + d.additions, 0);
+    const totalDel = diffs.reduce((s, d) => s + d.deletions, 0);
+    const summary = `\n<b>${diffs.length} file${diffs.length === 1 ? "" : "s"}</b> changed: <code>+${totalAdd} -${totalDel}</code>`;
+
+    await safeSend(() =>
+      ctx.reply(`<b>Changed Files:</b>\n\n${lines.join("\n")}${summary}`, { parse_mode: "HTML" }),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Failed to get diff: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /pending — List pending permission requests
+// ---------------------------------------------------------------------------
+
+export async function pendingCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const state = getChatState(chatId);
+  const pending = Array.from(state.pendingPermissions.values());
+
+  if (pending.length === 0) {
+    await safeSend(() => ctx.reply("No pending permission requests."));
+    return;
+  }
+
+  const lines = pending.map((p, i) => {
+    const age = Math.round((Date.now() - p.timestamp) / 1000);
+    const ageStr = age < 60 ? `${age}s ago` : `${Math.round(age / 60)}m ago`;
+    return `${i + 1}. <b>${escapeHtml(p.tool)}</b> (${ageStr})\n   ${escapeHtml(p.description.slice(0, 100))}`;
+  });
+
+  await safeSend(() =>
+    ctx.reply(
+      `<b>Pending Permissions (${pending.length}):</b>\n\n${lines.join("\n\n")}\n\nReply <code>YES</code>, <code>NO</code>, or <code>ALWAYS</code> to the most recent, or tap the inline buttons.`,
+      { parse_mode: "HTML" },
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// /messages — Show last N messages from the session
+// ---------------------------------------------------------------------------
+
+export async function messagesCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() => ctx.reply("No active session. Use /attach or /new first."));
+    return;
+  }
+
+  const limitArg = typeof ctx.match === "string" ? parseInt(ctx.match.trim(), 10) : NaN;
+  const limit = Number.isFinite(limitArg) && limitArg > 0 ? Math.min(limitArg, 20) : 5;
+
+  try {
+    const { data: messages } = await getClient().session.messages({
+      path: { id: sessionId },
+      query: { limit },
+    });
+
+    if (!messages || messages.length === 0) {
+      await safeSend(() => ctx.reply("No messages in this session."));
+      return;
+    }
+
+    const lines = messages.map((m) => {
+      const role = m.info.role === "user" ? "👤" : "🤖";
+      const textParts = m.parts
+        .filter((p) => p.type === "text" && p.text)
+        .map((p) => p.text!);
+      const preview = textParts.join(" ").slice(0, 200);
+      return `${role} <b>${escapeHtml(m.info.role)}</b>\n${escapeHtml(preview)}${preview.length >= 200 ? "…" : ""}`;
+    });
+
+    await safeSend(() =>
+      ctx.reply(
+        `<b>Last ${messages.length} message${messages.length === 1 ? "" : "s"}:</b>\n\n${lines.join("\n\n")}`,
+        { parse_mode: "HTML" },
+      ),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Failed to fetch messages: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /oc_undo — Revert last message + file changes
+// ---------------------------------------------------------------------------
+
+export async function ocUndoCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() => ctx.reply("No active session."));
+    return;
+  }
+
+  try {
+    await getClient().session.revert({
+      path: { id: sessionId },
+    });
+    await safeSend(() => ctx.reply("↩️ Undone. File changes reverted."));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Undo failed: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /oc_redo — Restore undone changes
+// ---------------------------------------------------------------------------
+
+export async function ocRedoCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() => ctx.reply("No active session."));
+    return;
+  }
+
+  try {
+    await getClient().session.unrevert({
+      path: { id: sessionId },
+    });
+    await safeSend(() => ctx.reply("↪️ Redone. Changes restored."));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Redo failed: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /oc_compact — Summarize/compact session
+// ---------------------------------------------------------------------------
+
+export async function ocCompactCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() => ctx.reply("No active session."));
+    return;
+  }
+
+  try {
+    await getClient().session.summarize({
+      path: { id: sessionId },
+    });
+    await safeSend(() => ctx.reply("📦 Session compacted."));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Compact failed: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /oc_share — Share session and get URL
+// ---------------------------------------------------------------------------
+
+export async function ocShareCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() => ctx.reply("No active session."));
+    return;
+  }
+
+  try {
+    const { data } = await getClient().session.share({
+      path: { id: sessionId },
+    });
+
+    const url = data?.share?.url;
+    if (url) {
+      await safeSend(() =>
+        ctx.reply(`🔗 Session shared:\n${url}`),
+      );
+    } else {
+      await safeSend(() => ctx.reply("✅ Session shared (no URL returned)."));
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Share failed: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /commands — List all available OpenCode commands
+// ---------------------------------------------------------------------------
+
+export async function commandsCommand(ctx: Context): Promise<void> {
+  try {
+    const { data: commands } = await getClient().command.list();
+
+    if (!commands || commands.length === 0) {
+      await safeSend(() => ctx.reply("No OpenCode commands available."));
+      return;
+    }
+
+    const lines = commands.map((cmd) => {
+      const desc = cmd.description ? ` — ${escapeHtml(cmd.description)}` : "";
+      const source = cmd.source ? ` <i>[${escapeHtml(cmd.source)}]</i>` : "";
+      return `• <code>/oc_${escapeHtml(cmd.name)}</code>${desc}${source}`;
+    });
+
+    await safeSend(() =>
+      ctx.reply(`<b>OpenCode Commands:</b>\n\n${lines.join("\n")}`, { parse_mode: "HTML" }),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Failed to list commands: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generic /oc_* handler — dispatch to session.command()
+// ---------------------------------------------------------------------------
+
+export async function ocGenericCommand(commandName: string, ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const sessionId = getActiveSessionId(chatId);
+  if (!sessionId) {
+    await safeSend(() => ctx.reply("No active session."));
+    return;
+  }
+
+  const args = typeof ctx.match === "string" ? ctx.match.trim() : "";
+
+  try {
+    await getClient().session.command({
+      path: { id: sessionId },
+      body: { command: commandName, arguments: args || "" },
+    });
+    await safeSend(() =>
+      ctx.reply(`✅ Command <code>/${escapeHtml(commandName)}</code> sent.`, { parse_mode: "HTML" }),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Command failed: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+}
+
+/**
+ * Discover OpenCode commands and return them for bot menu registration.
+ */
+export async function discoverCommands(): Promise<OpenCodeCommand[]> {
+  try {
+    const { data } = await getClient().command.list();
+    return data ?? [];
+  } catch {
+    return [];
   }
 }

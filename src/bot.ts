@@ -13,6 +13,17 @@ import {
   effortCommand,
   statusCommand,
   abortCommand,
+  shellCommand,
+  diffCommand,
+  pendingCommand,
+  messagesCommand,
+  ocUndoCommand,
+  ocRedoCommand,
+  ocCompactCommand,
+  ocShareCommand,
+  commandsCommand,
+  ocGenericCommand,
+  discoverCommands,
   setClient as setCommandsClient,
 } from "./handlers/commands.js";
 import {
@@ -91,6 +102,26 @@ export function createBot(opts: CreateBotOptions): Bot {
   bot.command("effort", effortCommand);
   bot.command("status", statusCommand);
   bot.command("abort", abortCommand);
+  bot.command("shell", shellCommand);
+  bot.command("diff", diffCommand);
+  bot.command("pending", pendingCommand);
+  bot.command("messages", messagesCommand);
+  bot.command("oc_undo", ocUndoCommand);
+  bot.command("oc_redo", ocRedoCommand);
+  bot.command("oc_compact", ocCompactCommand);
+  bot.command("oc_share", ocShareCommand);
+  bot.command("commands", commandsCommand);
+
+  // ── Dynamic /oc_* catch-all for custom OpenCode commands ──────────────
+  bot.hears(/^\/oc_(\w+)(?:\s+(.*))?$/, async (ctx) => {
+    const match = ctx.match;
+    const commandName = match[1]!;
+    // Skip commands we handle explicitly
+    if (["undo", "redo", "compact", "share"].includes(commandName)) return;
+    // Inject the arguments as ctx.match for ocGenericCommand
+    (ctx as any).match = match[2] ?? "";
+    await ocGenericCommand(commandName, ctx);
+  });
 
   // ── Callback queries ──────────────────────────────────────────────────
   bot.on("callback_query:data", handleCallback);
@@ -121,6 +152,63 @@ export function injectClient(client: unknown): void {
   setCommandsClient(client);
   setMessagesClient(client);
   setCallbacksClient(client);
+}
+
+// ---------------------------------------------------------------------------
+// Bot menu registration
+// ---------------------------------------------------------------------------
+
+/**
+ * Register all bot commands in Telegram's command menu.
+ * Also auto-discovers custom OpenCode commands and registers them as /oc_*.
+ */
+export async function registerBotMenu(bot: Bot): Promise<void> {
+  const builtinCommands = [
+    { command: "start", description: "Start the bot" },
+    { command: "help", description: "Show help" },
+    { command: "attach", description: "Attach to a session" },
+    { command: "detach", description: "Detach from session" },
+    { command: "new", description: "Create new session" },
+    { command: "sessions", description: "List sessions" },
+    { command: "switch", description: "Switch session" },
+    { command: "model", description: "List/set model" },
+    { command: "effort", description: "Set reasoning effort" },
+    { command: "status", description: "Show bot status" },
+    { command: "abort", description: "Abort current operation" },
+    { command: "shell", description: "Run shell command" },
+    { command: "diff", description: "Show changed files" },
+    { command: "pending", description: "List pending permissions" },
+    { command: "messages", description: "Show recent messages" },
+    { command: "oc_undo", description: "Undo last changes" },
+    { command: "oc_redo", description: "Redo undone changes" },
+    { command: "oc_compact", description: "Compact/summarize session" },
+    { command: "oc_share", description: "Share session URL" },
+    { command: "commands", description: "List OpenCode commands" },
+  ];
+
+  // Auto-discover custom OpenCode commands
+  try {
+    const ocCommands = await discoverCommands();
+    const builtinNames = new Set(["undo", "redo", "compact", "share"]);
+    for (const cmd of ocCommands) {
+      if (builtinNames.has(cmd.name)) continue; // already registered explicitly
+      builtinCommands.push({
+        command: `oc_${cmd.name}`,
+        description: cmd.description?.slice(0, 256) ?? `OpenCode: ${cmd.name}`,
+      });
+    }
+  } catch {
+    // Non-fatal — proceed with builtin commands only
+  }
+
+  // Telegram limits to 100 commands
+  const commands = builtinCommands.slice(0, 100);
+
+  try {
+    await bot.api.setMyCommands(commands);
+  } catch {
+    // Non-fatal — menu registration failure shouldn't block startup
+  }
 }
 
 // ---------------------------------------------------------------------------

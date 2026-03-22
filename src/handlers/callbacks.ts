@@ -9,9 +9,9 @@ import { escapeHtml } from "../utils/format.js";
 // ---------------------------------------------------------------------------
 
 interface OpenCodeClient {
-  postSessionByIdPermissionsByPermissionId(params: {
-    path: { id: string; permissionId: string };
-    body: unknown;
+  postSessionIdPermissionsPermissionId(params: {
+    path: { id: string; permissionID: string };
+    body: { response: "once" | "always" | "reject" };
   }): Promise<unknown>;
 }
 
@@ -91,7 +91,7 @@ export async function handleCallback(ctx: Context): Promise<void> {
   try {
     switch (entry.action) {
       // ----------------------------------------------------------------
-      // Permission approval
+      // Permission approval (once)
       // ----------------------------------------------------------------
       case "perm_approve": {
         const { sessionId, permissionId } = entry.data;
@@ -102,9 +102,9 @@ export async function handleCallback(ctx: Context): Promise<void> {
           return;
         }
 
-        await getClient().postSessionByIdPermissionsByPermissionId({
-          path: { id: sessionId, permissionId },
-          body: {},
+        await getClient().postSessionIdPermissionsPermissionId({
+          path: { id: sessionId, permissionID: permissionId },
+          body: { response: "once" },
         });
 
         getChatState(chatId).pendingPermissions.delete(permissionId);
@@ -117,7 +117,33 @@ export async function handleCallback(ctx: Context): Promise<void> {
       }
 
       // ----------------------------------------------------------------
-      // Permission denial — notify SDK so the session doesn't hang
+      // Permission approval (always) — permanently whitelist
+      // ----------------------------------------------------------------
+      case "perm_always": {
+        const { sessionId, permissionId } = entry.data;
+        if (!sessionId || !permissionId) {
+          await safeSend(() =>
+            ctx.answerCallbackQuery({ text: "Invalid callback data." }),
+          );
+          return;
+        }
+
+        await getClient().postSessionIdPermissionsPermissionId({
+          path: { id: sessionId, permissionID: permissionId },
+          body: { response: "always" },
+        });
+
+        getChatState(chatId).pendingPermissions.delete(permissionId);
+        await safeSend(() => ctx.answerCallbackQuery({ text: "✅ Always Allowed" }));
+        await safeEditText(
+          ctx,
+          `${escapeHtml(originalMessageText(ctx))}\n\n✅ <b>Always Allowed</b>`,
+        );
+        break;
+      }
+
+      // ----------------------------------------------------------------
+      // Permission denial
       // ----------------------------------------------------------------
       case "perm_deny": {
         const { sessionId, permissionId } = entry.data;
@@ -128,13 +154,10 @@ export async function handleCallback(ctx: Context): Promise<void> {
           return;
         }
 
-        // Best-effort: call the permission endpoint to unblock the session.
-        // If the SDK has no explicit deny mechanism, this call may fail —
-        // the session will eventually time out on its own.
         try {
-          await getClient().postSessionByIdPermissionsByPermissionId({
-            path: { id: sessionId, permissionId },
-            body: { deny: true },
+          await getClient().postSessionIdPermissionsPermissionId({
+            path: { id: sessionId, permissionID: permissionId },
+            body: { response: "reject" },
           });
         } catch {
           // SDK may not support explicit deny — fall through silently

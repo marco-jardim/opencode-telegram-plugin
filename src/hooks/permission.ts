@@ -41,6 +41,10 @@ export function handlePermissionAsked(
       permissionId,
       sessionId: sessionID,
     });
+    const alwaysKey = registerCallback("perm_always", {
+      permissionId,
+      sessionId: sessionID,
+    });
     const denyKey = registerCallback("perm_deny", {
       permissionId,
       sessionId: sessionID,
@@ -48,12 +52,14 @@ export function handlePermissionAsked(
 
     const keyboard = new InlineKeyboard()
       .text("✅ Approve", approveKey)
+      .text("✅ Always", alwaysKey)
       .text("❌ Deny", denyKey);
 
     const messageText =
       `🔐 <b>Permission requested</b>\n\n` +
       `<b>Tool:</b> <code>${escapeHtml(tool)}</code>\n` +
-      escapeHtml(description);
+      escapeHtml(description) +
+      `\n\n<i>Reply YES, ALWAYS, or NO</i>`;
 
     void (async () => {
       const result = await safeSend(() =>

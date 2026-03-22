@@ -3,6 +3,7 @@ import { getActiveSessionId, attachSession } from "../state/mode.js";
 import { getChatState } from "../state/store.js";
 import { safeSend } from "../utils/safeSend.js";
 import { escapeHtml } from "../utils/format.js";
+import { executeShell } from "./commands.js";
 
 // ---------------------------------------------------------------------------
 // Client interface — only the methods used in this file
@@ -26,6 +27,10 @@ interface OpenCodeClient {
       };
     }): Promise<{ data: { info: unknown; parts: unknown[] } }>;
   };
+  postSessionIdPermissionsPermissionId(params: {
+    path: { id: string; permissionID: string };
+    body: { response: "once" | "always" | "reject" };
+  }): Promise<unknown>;
 }
 
 let _client: OpenCodeClient | null = null;
@@ -64,6 +69,85 @@ async function tryAutoAttach(chatId: number): Promise<string | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Permission text-reply helper
+// ---------------------------------------------------------------------------
+
+type PermissionReply = "once" | "always" | "reject";
+
+function parsePermissionReply(text: string): PermissionReply | null {
+  const lower = text.trim().toLowerCase();
+  if (lower === "yes" || lower === "y" || lower === "approve") return "once";
+  if (lower === "always" || lower === "yes always") return "always";
+  if (lower === "no" || lower === "n" || lower === "deny" || lower === "reject") return "reject";
+  return null;
+}
+
+const REPLY_LABELS: Record<PermissionReply, string> = {
+  once: "✅ Approved",
+  always: "✅ Always Allowed",
+  reject: "❌ Denied",
+};
+
+/**
+ * Try to resolve a text-based permission reply.
+ * Returns true if the message was handled as a permission reply.
+ */
+async function tryPermissionReply(ctx: Context, chatId: number, text: string): Promise<boolean> {
+  const reply = parsePermissionReply(text);
+  if (!reply) return false;
+
+  const state = getChatState(chatId);
+  if (state.pendingPermissions.size === 0) return false;
+
+  // If replying to a specific permission message, match by telegramMessageId
+  const replyToId = ctx.message?.reply_to_message?.message_id;
+  let targetPerm: { permissionId: string; sessionId: string } | null = null;
+
+  if (replyToId) {
+    for (const perm of state.pendingPermissions.values()) {
+      if (perm.telegramMessageId === replyToId) {
+        targetPerm = { permissionId: perm.permissionId, sessionId: perm.sessionId };
+        break;
+      }
+    }
+  }
+
+  // Fallback: apply to most recent pending permission
+  if (!targetPerm) {
+    let latest: { permissionId: string; sessionId: string; timestamp: number } | null = null;
+    for (const perm of state.pendingPermissions.values()) {
+      if (!latest || perm.timestamp > latest.timestamp) {
+        latest = { permissionId: perm.permissionId, sessionId: perm.sessionId, timestamp: perm.timestamp };
+      }
+    }
+    if (latest) {
+      targetPerm = { permissionId: latest.permissionId, sessionId: latest.sessionId };
+    }
+  }
+
+  if (!targetPerm) return false;
+
+  try {
+    await getClient().postSessionIdPermissionsPermissionId({
+      path: { id: targetPerm.sessionId, permissionID: targetPerm.permissionId },
+      body: { response: reply },
+    });
+
+    state.pendingPermissions.delete(targetPerm.permissionId);
+    await safeSend(() =>
+      ctx.reply(REPLY_LABELS[reply], { parse_mode: "HTML" }),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Permission reply failed: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -71,11 +155,10 @@ async function tryAutoAttach(chatId: number): Promise<string | null> {
  * Handles every plain-text message sent to the bot.
  *
  * Flow:
- *  1. Resolve (or auto-attach to) an active session.
- *  2. Fire the prompt against the OpenCode SDK — without awaiting the full
- *     response, because the streaming reply arrives through event hooks
- *     (message.updated) and is handled by a separate event listener.
- *  3. Propagate any errors back to the user.
+ *  1. Check for !<cmd> shell prefix.
+ *  2. Check for permission text replies (YES/NO/ALWAYS).
+ *  3. Resolve (or auto-attach to) an active session.
+ *  4. Fire the prompt against the OpenCode SDK.
  */
 export async function handleTextMessage(ctx: Context): Promise<void> {
   const chatId = ctx.chat?.id;
@@ -89,7 +172,24 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   if (text.startsWith("/")) return;
 
   // ------------------------------------------------------------------
-  // 1. Resolve active session
+  // 1. Shell prefix: !<command>
+  // ------------------------------------------------------------------
+  if (text.startsWith("!")) {
+    const command = text.slice(1).trim();
+    if (command) {
+      await executeShell(ctx, chatId, command);
+      return;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 2. Text-based permission replies (YES/NO/ALWAYS)
+  // ------------------------------------------------------------------
+  const handled = await tryPermissionReply(ctx, chatId, text);
+  if (handled) return;
+
+  // ------------------------------------------------------------------
+  // 3. Resolve active session
   // ------------------------------------------------------------------
   let sessionId = getActiveSessionId(chatId);
 
@@ -111,7 +211,7 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   }
 
   // ------------------------------------------------------------------
-  // 2. Show typing indicator (best-effort)
+  // 4. Show typing indicator (best-effort)
   // ------------------------------------------------------------------
   try {
     await ctx.api.sendChatAction(chatId, "typing");
@@ -120,7 +220,7 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   }
 
   // ------------------------------------------------------------------
-  // 3. Fire the prompt — response streams via event hooks, not here
+  // 5. Fire the prompt — response streams via event hooks, not here
   // ------------------------------------------------------------------
   const capturedSessionId = sessionId; // capture before any async gap
 

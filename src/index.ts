@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin";
 
-import { createBot, injectClient } from "./bot.js";
+import { createBot, injectClient, registerBotMenu } from "./bot.js";
 import { initMapping } from "./state/mapping.js";
 import {
   resolveConfig,
@@ -269,6 +269,9 @@ export const TelegramPlugin: Plugin = async (ctx) => {
           message: "Telegram bot started (token from " + config.tokenSource + ").",
         },
       });
+
+      // Register bot commands in Telegram's menu (non-blocking)
+      void registerBotMenu(bot).catch(() => undefined);
     },
     allowed_updates: [
       "message",

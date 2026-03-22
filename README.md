@@ -7,9 +7,12 @@ Telegram bot plugin for [OpenCode](https://opencode.ai) — remote control and i
 - **Remote Control** — attach to your active TUI session, see streaming responses in real-time, send prompts, and approve/deny permission requests via inline buttons
 - **Independent Sessions** — create standalone sessions for async work from your phone
 - **Live Streaming** — AI responses stream into Telegram with throttled in-place message edits
-- **Permission Handling** — tool permission prompts appear as inline keyboards (Approve / Deny)
+- **Permission Handling** — tool permission prompts with inline keyboards (Approve / Always / Deny), plus text replies (YES/NO/ALWAYS)
+- **Shell Access** — run shell commands directly from Telegram (`!git status` or `/shell`)
 - **Tool Status** — see which tools are executing in real-time
 - **Multi-session** — switch between sessions, list active sessions, create new ones
+- **Session Control** — undo/redo file changes, compact/summarize, share sessions, view diffs
+- **Bot Menu** — all commands auto-registered in Telegram's command menu, including auto-discovered OpenCode commands
 - **Config Management** — built-in `/telegram` slash command for setup without leaving OpenCode
 
 ## Quick Start
@@ -142,19 +145,30 @@ Once the bot is running, these commands are available in Telegram:
 | Command | Description |
 |---------|-------------|
 | `/start` | Initialize bot, auto-attach to active session |
-| `/attach` | Attach to an active TUI session (shows picker) |
+| `/help` | Show help |
+| `/attach [id]` | Attach to a session (shows picker if no ID) |
 | `/detach` | Detach from the current session |
-| `/new` | Create an independent session |
+| `/new [title]` | Create an independent session |
 | `/sessions` | List all sessions |
-| `/switch` | Switch to a different session |
-| `/model` | List available models with favorites marked |
+| `/switch [id]` | Switch to a different session |
+| `!command` | Run a shell command (e.g. `!git status`) |
+| `/shell <cmd>` | Run a shell command |
+| `/diff` | Show changed files in current session |
+| `/messages [n]` | Show last N messages (default: 5, max: 20) |
+| `/pending` | List pending permission requests |
+| `/model` | List available models with favorites |
 | `/model <provider/model-id>` | Set a specific model for this chat |
 | `/model reset` | Reset to the default model |
-| `/effort` | Show current effort level |
-| `/effort <low\|medium\|high>` | Set reasoning effort level |
+| `/effort [low\|medium\|high]` | Set/show reasoning effort level |
 | `/status` | Show current connection status |
-| `/abort` | Abort the current session |
-| `/help` | Show help |
+| `/abort` | Abort the current operation |
+| `/oc_undo` | Undo last message and file changes |
+| `/oc_redo` | Redo undone changes |
+| `/oc_compact` | Summarize/compact the session |
+| `/oc_share` | Share the session (get URL) |
+| `/commands` | List all available OpenCode commands |
+
+Text replies to permission messages: `YES`, `NO`, or `ALWAYS` (reply to a specific permission message, or send bare to apply to the most recent).
 
 ## How It Works
 
@@ -184,10 +198,15 @@ When OpenCode requests tool permissions, an inline keyboard appears in Telegram:
 ```
 🔐 Permission requested: bash
 Command: git status
-[✅ Approve] [❌ Deny]
+[✅ Approve] [✅ Always] [❌ Deny]
 ```
 
-Tapping a button responds to the permission request in OpenCode.
+You can respond by:
+- Tapping an inline button
+- Replying with `YES`, `ALWAYS`, or `NO` to the permission message
+- Sending bare `YES`/`ALWAYS`/`NO` to apply to the most recent pending request
+
+Use `/pending` to see all pending permission requests.
 
 ## Project Structure
 
