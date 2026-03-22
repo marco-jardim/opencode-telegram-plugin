@@ -35,7 +35,8 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   }
 
   const allowedUsers = process.env["TELEGRAM_ALLOWED_USERS"] ?? "";
-  const editIntervalMs = Number(process.env["TELEGRAM_EDIT_INTERVAL_MS"]) || 2500;
+  const rawInterval = Number(process.env["TELEGRAM_EDIT_INTERVAL_MS"]);
+  const editIntervalMs = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 2500;
 
   // ── Persistent mapping store ──────────────────────────────────────────
   const dataDir = `${directory}/.opencode/telegram`;
@@ -75,6 +76,8 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   function shutdown(): void {
     if (stopping) return;
     stopping = true;
+    // Remove listener to prevent leaks on hot-reload
+    process.off("SIGINT", shutdown);
     bot.stop().catch(() => undefined);
   }
 

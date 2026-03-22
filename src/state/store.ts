@@ -142,4 +142,14 @@ export function cleanExpiredCallbacks(): void {
       callbackRegistry.delete(key);
     }
   }
+
+  // Also sweep expired pending permissions across all chats.
+  // Permissions share the same TTL as callbacks (10 minutes).
+  for (const state of chatStates.values()) {
+    for (const [permId, perm] of state.pendingPermissions) {
+      if (now - perm.timestamp > DEFAULT_CALLBACK_TTL_MS) {
+        state.pendingPermissions.delete(permId);
+      }
+    }
+  }
 }

@@ -115,15 +115,22 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   // ------------------------------------------------------------------
   const capturedSessionId = sessionId; // capture before any async gap
 
-  void getClient()
-    .session.prompt({
-      path: { id: capturedSessionId },
-      body: { parts: [{ type: "text", text }] },
-    })
-    .catch(async (err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      await safeSend(() =>
-        ctx.reply(`❌ Error sending prompt: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
-      );
-    });
+  try {
+    void getClient()
+      .session.prompt({
+        path: { id: capturedSessionId },
+        body: { parts: [{ type: "text", text }] },
+      })
+      .catch(async (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        await safeSend(() =>
+          ctx.reply(`❌ Error sending prompt: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+        );
+      });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`❌ Error sending prompt: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
+  }
 }

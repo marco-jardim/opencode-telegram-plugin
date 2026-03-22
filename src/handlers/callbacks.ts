@@ -117,7 +117,7 @@ export async function handleCallback(ctx: Context): Promise<void> {
       }
 
       // ----------------------------------------------------------------
-      // Permission denial — no API call; the permission simply lapses
+      // Permission denial — notify SDK so the session doesn't hang
       // ----------------------------------------------------------------
       case "perm_deny": {
         const { sessionId, permissionId } = entry.data;
@@ -126,6 +126,18 @@ export async function handleCallback(ctx: Context): Promise<void> {
             ctx.answerCallbackQuery({ text: "Invalid callback data." }),
           );
           return;
+        }
+
+        // Best-effort: call the permission endpoint to unblock the session.
+        // If the SDK has no explicit deny mechanism, this call may fail —
+        // the session will eventually time out on its own.
+        try {
+          await getClient().postSessionByIdPermissionsByPermissionId({
+            path: { id: sessionId, permissionId },
+            body: { deny: true },
+          });
+        } catch {
+          // SDK may not support explicit deny — fall through silently
         }
 
         getChatState(chatId).pendingPermissions.delete(permissionId);

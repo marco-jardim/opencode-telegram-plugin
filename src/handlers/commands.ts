@@ -1,6 +1,6 @@
 import type { Context } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { getChatState, resetStream, registerCallback } from "../state/store.js";
+import { getChatState, cleanupChatStream, registerCallback } from "../state/store.js";
 import {
   getActiveSessionId,
   getMode,
@@ -404,7 +404,7 @@ export async function abortCommand(ctx: Context): Promise<void> {
 
   try {
     await getClient().session.abort({ path: { id: activeId } });
-    resetStream(chatId);
+    cleanupChatStream(chatId);
     await safeSend(() => ctx.reply("⛔ Aborted."));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

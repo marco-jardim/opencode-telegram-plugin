@@ -54,6 +54,11 @@ export function createBot(opts: CreateBotOptions): Bot {
   // ── Auto-retry plugin (handles 429 / 500 transparently) ─────────────────
   bot.api.config.use(autoRetry());
 
+  // ── Global error handler — prevents unhandled errors from killing the bot
+  bot.catch((err) => {
+    console.error("[telegram-plugin] Unhandled error in middleware:", err.error);
+  });
+
   // ── Middleware: private-chat only ───────────────────────────────────────
   bot.use(async (ctx, next) => {
     if (ctx.chat?.type !== "private") return; // silently drop group messages

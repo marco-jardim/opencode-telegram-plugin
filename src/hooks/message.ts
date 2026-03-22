@@ -66,8 +66,6 @@ export function handleMessageUpdated(
     if (getActiveSessionId(chatId) !== sessionID) continue;
 
     const chatState = getChatState(chatId);
-    if (chatState.stream.state === "FINAL") continue;
-
     void processStreamForChat(
       chatId,
       chatState,
@@ -109,9 +107,15 @@ async function processStreamForChat(
   // ── Initial send ──────────────────────────────────────────────────────────
   if (
     chatState.stream.state === "IDLE" ||
-    chatState.stream.state === "PENDING_SEND" ||
     chatState.stream.state === "FINAL"
   ) {
+    // If transitioning from FINAL, reset stream state for the new response
+    if (chatState.stream.state === "FINAL") {
+      chatState.stream.chunks = [];
+      chatState.stream.messageId = null;
+      chatState.stream.lastSentText = "";
+      chatState.stream.streamGeneration++;
+    }
     // Lock immediately to prevent duplicate sends on concurrent events
     chatState.stream.state = "PENDING_SEND";
     if (!chatState.typingStop) {

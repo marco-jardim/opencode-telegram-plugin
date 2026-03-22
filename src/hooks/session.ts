@@ -57,7 +57,7 @@ export function handleSessionIdle(
   const { sessionID } = event.properties;
   const { api } = ctx;
 
-  for (const chatId of attachedChatIds(sessionID)) {
+  for (const chatId of matchingChatIds(sessionID)) {
     // Clean up stream state + typing indicator
     cleanupChatStream(chatId);
 
@@ -104,8 +104,8 @@ export function handleSessionStatus(
   const { sessionID, status } = event.properties;
   const { api } = ctx;
 
-  // Skip empty or whitespace-only status strings to avoid noise
-  if (!status.trim()) return;
+  // Skip empty, whitespace-only, or missing status strings to avoid noise
+  if (typeof status !== "string" || !status.trim()) return;
 
   for (const chatId of attachedChatIds(sessionID)) {
     void safeSend(() =>

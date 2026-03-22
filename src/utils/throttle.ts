@@ -54,6 +54,12 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
    * the promise that was returned to the original caller.
    */
   async function runPending(): Promise<void> {
+    // If a previous execution is still in progress, defer until it finishes.
+    if (isRunning) {
+      timerId = setTimeout(() => void runPending(), opts.intervalMs);
+      return;
+    }
+
     const fn = pending;
     const resolve = pendingResolve;
     const reject = pendingReject;

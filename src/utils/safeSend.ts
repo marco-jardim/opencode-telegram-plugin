@@ -74,7 +74,7 @@ export async function safeSend(
 
     if (err instanceof GrammyError) {
       if (err.error_code === 429) {
-        const retryAfter = (err as any).parameters?.retry_after;
+        const retryAfter = err.parameters.retry_after;
         const retryAfterMs = typeof retryAfter === "number" ? retryAfter * 1000 : undefined;
         return { ok: false, retry: true, reason: "rate limited", retryAfterMs };
       }

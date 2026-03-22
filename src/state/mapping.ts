@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -88,7 +88,7 @@ function saveMappingsSync(): void {
     renameSync(tmpPath, filePath);
   } catch (err) {
     // Clean up temp file on failure
-    try { if (existsSync(tmpPath)) writeFileSync(tmpPath, "", "utf-8"); } catch { /* ignore */ }
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
     throw err;
   }
 }

@@ -19,6 +19,11 @@ export function startTyping(api: Api<RawApi>, chatId: number): () => void {
     void api.sendChatAction(chatId, "typing").catch(() => undefined);
   }, 4500);
 
+  // Ensure the timer doesn't prevent Node.js from exiting gracefully.
+  if (typeof intervalId === "object" && "unref" in intervalId) {
+    intervalId.unref();
+  }
+
   return () => {
     clearInterval(intervalId);
   };
