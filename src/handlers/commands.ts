@@ -29,9 +29,13 @@ interface OpenCodeClient {
     abort(params: { path: { id: string } }): Promise<boolean>;
   };
   config: {
-    get(): Promise<{
+    providers(): Promise<{
       data: {
-        providers: Record<string, { models: Record<string, { name: string }> }>;
+        providers: Array<{
+          id: string;
+          name: string;
+          models: Record<string, { id: string; name: string }>;
+        }>;
       };
     }>;
   };
@@ -323,19 +327,17 @@ export async function switchCommand(ctx: Context): Promise<void> {
 
 export async function modelCommand(ctx: Context): Promise<void> {
   try {
-    const { data } = await getClient().config.get();
-    const { providers } = data;
-    const providerIds = Object.keys(providers ?? {});
+    const { data } = await getClient().config.providers();
+    const providers = data?.providers ?? [];
 
-    if (providerIds.length === 0) {
+    if (providers.length === 0) {
       await safeSend(() => ctx.reply("No models configured."));
       return;
     }
 
     const lines: string[] = [];
-    for (const providerId of providerIds) {
-      const provider = providers[providerId]!;
-      lines.push(`<b>${escapeHtml(providerId)}</b>`);
+    for (const provider of providers) {
+      lines.push(`<b>${escapeHtml(provider.name || provider.id)}</b>`);
 
       const modelIds = Object.keys(provider.models ?? {});
       if (modelIds.length === 0) {
