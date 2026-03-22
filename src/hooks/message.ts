@@ -2,12 +2,10 @@ import type { Api, RawApi } from "grammy";
 import {
   getAllChatIds,
   getChatState,
-  type ChatState,
 } from "../state/store.js";
 import { getActiveSessionId } from "../state/mode.js";
 import { markdownToTelegramHtml, stripHtml } from "../utils/format.js";
 import { chunkMessage } from "../utils/chunk.js";
-import { createThrottle, type Throttle } from "../utils/throttle.js";
 import { safeSend } from "../utils/safeSend.js";
 import { startTyping } from "../utils/typing.js";
 
@@ -58,12 +56,11 @@ export interface PartDeltaEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Track which messageIDs belong to assistant (vs user)
+// Track assistant message IDs
 // ---------------------------------------------------------------------------
 
 const assistantMessageIds = new Set<string>();
 
-/** Called when message.updated fires — records assistant message IDs */
 export function handleMessageInfo(event: MessageUpdatedEvent): void {
   const { info } = event.properties;
   if (info.role === "assistant") {
@@ -93,37 +90,23 @@ function clearAccumulated(partID: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Per-chat: latest text + html for the current stream
-// The throttled doEdit reads from here to always use the freshest text.
+// Per-chat streaming context
+// Simple model: store latest text, use setInterval to periodically edit.
 // ---------------------------------------------------------------------------
 
-interface LatestText {
-  rawText: string;
-  html: string;
+interface ChatStreamCtx {
+  latestRawText: string;
+  latestHtml: string;
   isFinal: boolean;
+  editTimer: ReturnType<typeof setInterval> | null;
+  api: Api<RawApi>;
+  editIntervalMs: number;
+  editing: boolean;
+  /** True while the initial sendMessage is in-flight */
+  sending: boolean;
 }
 
-const latestTextByChat = new Map<number, LatestText>();
-
-// ---------------------------------------------------------------------------
-// Per-chat: text buffered during PENDING_SEND
-// ---------------------------------------------------------------------------
-
-const pendingTextByChat = new Map<number, LatestText>();
-
-// ---------------------------------------------------------------------------
-// Throttle instances keyed by chatId
-// ---------------------------------------------------------------------------
-
-const chatThrottles = new Map<number, Throttle>();
-
-function getOrCreateThrottle(chatId: number, intervalMs: number): Throttle {
-  const existing = chatThrottles.get(chatId);
-  if (existing !== undefined) return existing;
-  const t = createThrottle({ intervalMs });
-  chatThrottles.set(chatId, t);
-  return t;
-}
+const chatStreamCtx = new Map<number, ChatStreamCtx>();
 
 // ---------------------------------------------------------------------------
 // Handle message.part.delta — incremental streaming text
@@ -135,8 +118,6 @@ export function handlePartDelta(
 ): void {
   const { sessionID, messageID, partID, field, delta } = event.properties;
   if (field !== "text") return;
-
-  // Only stream assistant messages
   if (!isAssistantMessage(messageID)) return;
 
   const fullText = appendDelta(partID, delta);
@@ -147,10 +128,7 @@ export function handlePartDelta(
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-    const chatState = getChatState(chatId);
-    // Always update latest text for this chat
-    latestTextByChat.set(chatId, { rawText: fullText, html, isFinal: false });
-    dispatchToChat(chatId, chatState, html, fullText, false, api, editIntervalMs);
+    updateChatStream(chatId, html, fullText, false, api, editIntervalMs);
   }
 }
 
@@ -164,8 +142,6 @@ export function handlePartUpdated(
 ): void {
   const { part } = event.properties;
   if (part.type !== "text") return;
-
-  // Only stream assistant messages
   if (!isAssistantMessage(part.messageID)) return;
 
   const rawText = part.text ?? "";
@@ -181,9 +157,7 @@ export function handlePartUpdated(
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-    const chatState = getChatState(chatId);
-    latestTextByChat.set(chatId, { rawText, html, isFinal });
-    dispatchToChat(chatId, chatState, html, rawText, isFinal, api, editIntervalMs);
+    updateChatStream(chatId, html, rawText, isFinal, api, editIntervalMs);
   }
 
   if (isFinal) {
@@ -192,225 +166,210 @@ export function handlePartUpdated(
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch: if PENDING_SEND, buffer; otherwise process
+// Update chat stream context — creates initial send or updates latest text
 // ---------------------------------------------------------------------------
 
-function dispatchToChat(
+function updateChatStream(
   chatId: number,
-  chatState: ChatState,
   html: string,
   rawText: string,
   isFinal: boolean,
   api: Api<RawApi>,
   editIntervalMs: number,
 ): void {
-  if (chatState.stream.state === "PENDING_SEND") {
-    pendingTextByChat.set(chatId, { rawText, html, isFinal });
-    return;
-  }
+  let sctx = chatStreamCtx.get(chatId);
 
-  void processStreamForChat(chatId, chatState, html, rawText, isFinal, api, editIntervalMs);
-}
-
-// ---------------------------------------------------------------------------
-// Core streaming state machine
-// ---------------------------------------------------------------------------
-
-async function editWithFallback(
-  api: Api<RawApi>,
-  chatId: number,
-  messageId: number,
-  html: string,
-): Promise<void> {
-  const result = await safeSend(() =>
-    api.editMessageText(chatId, messageId, html, { parse_mode: "HTML" }),
-  );
-  if (!result.ok && result.reason === "parse error") {
-    await safeSend(() =>
-      api.editMessageText(chatId, messageId, stripHtml(html)),
-    );
-  }
-}
-
-async function processStreamForChat(
-  chatId: number,
-  chatState: ChatState,
-  html: string,
-  rawText: string,
-  isFinal: boolean,
-  api: Api<RawApi>,
-  editIntervalMs: number,
-): Promise<void> {
-  // ── Initial send ──────────────────────────────────────────────────────────
-  if (
-    chatState.stream.state === "IDLE" ||
-    chatState.stream.state === "FINAL"
-  ) {
-    if (chatState.stream.state === "FINAL") {
-      chatState.stream.chunks = [];
-      chatState.stream.messageId = null;
-      chatState.stream.lastSentText = "";
-      chatState.stream.streamGeneration++;
-    }
-    chatState.stream.state = "PENDING_SEND";
-    if (!chatState.typingStop) {
-      chatState.typingStop = startTyping(api, chatId);
-    }
-
-    const chunks = chunkMessage(html);
-    if (chunks.length === 0) return;
-
-    const firstResult = await safeSend(() =>
-      api.sendMessage(chatId, chunks[0], { parse_mode: "HTML" }),
-    );
-
-    if (!firstResult.ok) {
-      chatState.typingStop?.();
-      chatState.typingStop = null;
-      chatState.stream.state = "IDLE";
-      pendingTextByChat.delete(chatId);
-      return;
-    }
-
-    chatState.stream.messageId = firstResult.messageId ?? null;
-    chatState.stream.state = "SENT";
-    chatState.stream.lastSentText = rawText;
-
-    for (let i = 1; i < chunks.length; i++) {
-      const r = await safeSend(() =>
-        api.sendMessage(chatId, chunks[i], { parse_mode: "HTML" }),
-      );
-      if (r.ok && r.messageId !== undefined) {
-        chatState.stream.chunks.push(r.messageId);
-      }
-    }
-
-    if (isFinal) {
-      await finalizeStream(chatId, chatState);
-      pendingTextByChat.delete(chatId);
-      return;
-    }
-
-    // Catch up with text that arrived during PENDING_SEND
-    const buffered = pendingTextByChat.get(chatId);
-    pendingTextByChat.delete(chatId);
-    if (buffered && buffered.rawText !== rawText) {
-      void processStreamForChat(
-        chatId, chatState, buffered.html, buffered.rawText,
-        buffered.isFinal, api, editIntervalMs,
-      );
-    }
-    return;
-  }
-
-  // ── Streaming edits ───────────────────────────────────────────────────────
-  if (
-    chatState.stream.state === "SENT" ||
-    chatState.stream.state === "EDITING"
-  ) {
-    // Don't early-return based on rawText vs lastSentText here.
-    // doEdit reads latestTextByChat and has its own no-op guard.
-    chatState.stream.state = "EDITING";
-
-    const capturedGeneration = chatState.stream.streamGeneration;
-
-    // doEdit reads the LATEST text from latestTextByChat at execution time,
-    // not the stale text from when the throttle was scheduled.
-    const doEdit = async (): Promise<void> => {
-      if (
-        chatState.stream.streamGeneration !== capturedGeneration ||
-        (chatState.stream.state !== "EDITING" &&
-         chatState.stream.state !== "SENT")
-      ) {
-        return;
-      }
-
-      const msgId = chatState.stream.messageId;
-      if (msgId === null) return;
-
-      // Use the freshest text available
-      const latest = latestTextByChat.get(chatId);
-      const editHtml = latest ? latest.html : html;
-      const editRawText = latest ? latest.rawText : rawText;
-
-      if (editRawText === chatState.stream.lastSentText) return;
-
-      const editChunks = chunkMessage(editHtml);
-      if (editChunks.length === 0) return;
-
-      const editResult = await safeSend(() =>
-        api.editMessageText(chatId, msgId, editChunks[0], {
-          parse_mode: "HTML",
-        }),
-      );
-
-      if (!editResult.ok) {
-        if (editResult.reason === "parse error") {
-          await safeSend(() =>
-            api.editMessageText(chatId, msgId, stripHtml(editChunks[0])),
-          );
-        } else if (editResult.reason === "bot blocked") {
-          chatState.typingStop?.();
-          chatState.typingStop = null;
-          return;
-        }
-      }
-
-      chatState.stream.lastSentText = editRawText;
-
-      for (let i = 1; i < editChunks.length; i++) {
-        const existingId = chatState.stream.chunks[i - 1];
-        if (existingId !== undefined) {
-          await editWithFallback(api, chatId, existingId, editChunks[i]);
-        } else {
-          const r = await safeSend(() =>
-            api.sendMessage(chatId, editChunks[i], { parse_mode: "HTML" }),
-          );
-          if (r.ok && r.messageId !== undefined) {
-            chatState.stream.chunks.push(r.messageId);
-          }
-        }
-      }
-
-      const excessStart = editChunks.length - 1;
-      if (excessStart < chatState.stream.chunks.length) {
-        for (let j = chatState.stream.chunks.length - 1; j >= excessStart; j--) {
-          void safeSend(() => api.deleteMessage(chatId, chatState.stream.chunks[j]));
-        }
-        chatState.stream.chunks.length = Math.max(excessStart, 0);
-      }
+  if (!sctx) {
+    // First text — send initial message
+    sctx = {
+      latestRawText: rawText,
+      latestHtml: html,
+      isFinal,
+      editTimer: null,
+      api,
+      editIntervalMs,
+      editing: false,
+      sending: true,
     };
+    chatStreamCtx.set(chatId, sctx);
+    void sendInitialMessage(chatId, sctx);
+    return;
+  }
 
-    if (isFinal) {
-      const pending = chatThrottles.get(chatId);
-      if (pending) {
-        pending.cancel();
-        chatThrottles.delete(chatId);
-      }
-      if (rawText !== chatState.stream.lastSentText) {
-        await doEdit();
-      }
-      await finalizeStream(chatId, chatState);
-    } else {
-      const throttle = getOrCreateThrottle(chatId, editIntervalMs);
-      void throttle(doEdit);
-    }
+  // Update latest text
+  sctx.latestRawText = rawText;
+  sctx.latestHtml = html;
+  if (isFinal) {
+    sctx.isFinal = true;
+    void doFinalEdit(chatId, sctx);
   }
 }
 
-async function finalizeStream(
-  chatId: number,
-  chatState: ChatState,
-): Promise<void> {
+// ---------------------------------------------------------------------------
+// Send the initial message, then start the periodic edit timer
+// ---------------------------------------------------------------------------
+
+async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<void> {
+  const chatState = getChatState(chatId);
+
+  if (!chatState.typingStop) {
+    chatState.typingStop = startTyping(sctx.api, chatId);
+  }
+
+  const chunks = chunkMessage(sctx.latestHtml);
+  if (chunks.length === 0) {
+    sctx.sending = false;
+    return;
+  }
+
+  let firstResult = await safeSend(() =>
+    sctx.api.sendMessage(chatId, chunks[0], { parse_mode: "HTML" }),
+  );
+
+  // Fallback to plain text if HTML parse fails
+  if (!firstResult.ok && firstResult.reason === "parse error") {
+    firstResult = await safeSend(() =>
+      sctx.api.sendMessage(chatId, stripHtml(sctx.latestHtml)),
+    );
+  }
+
+  if (!firstResult.ok) {
+    sctx.sending = false;
+    cleanupStream(chatId);
+    return;
+  }
+
+  chatState.stream.messageId = firstResult.messageId ?? null;
+  chatState.stream.state = "SENT";
+  chatState.stream.lastSentText = sctx.latestRawText;
+  sctx.sending = false;
+
+  // Send overflow chunks
+  for (let i = 1; i < chunks.length; i++) {
+    const r = await safeSend(() =>
+      sctx.api.sendMessage(chatId, chunks[i], { parse_mode: "HTML" }),
+    );
+    if (r.ok && r.messageId !== undefined) {
+      chatState.stream.chunks.push(r.messageId);
+    }
+  }
+
+  // If already final, do one last edit and stop
+  if (sctx.isFinal) {
+    if (sctx.latestRawText !== chatState.stream.lastSentText) {
+      await doEdit(chatId, sctx);
+    }
+    cleanupStream(chatId);
+    return;
+  }
+
+  // Start periodic edit timer
+  sctx.editTimer = setInterval(() => {
+    void doEdit(chatId, sctx);
+  }, sctx.editIntervalMs);
+}
+
+// ---------------------------------------------------------------------------
+// Periodic edit — reads latest text and edits the Telegram message
+// ---------------------------------------------------------------------------
+
+async function doEdit(chatId: number, sctx: ChatStreamCtx): Promise<void> {
+  if (sctx.editing || sctx.sending) return;
+  sctx.editing = true;
+
+  try {
+    const chatState = getChatState(chatId);
+    const msgId = chatState.stream.messageId;
+    if (msgId === null) return;
+
+    if (sctx.latestRawText === chatState.stream.lastSentText) return;
+
+    const editChunks = chunkMessage(sctx.latestHtml);
+    if (editChunks.length === 0) return;
+
+    const editResult = await safeSend(() =>
+      sctx.api.editMessageText(chatId, msgId, editChunks[0], { parse_mode: "HTML" }),
+    );
+
+    if (!editResult.ok && editResult.reason === "parse error") {
+      await safeSend(() =>
+        sctx.api.editMessageText(chatId, msgId, stripHtml(editChunks[0])),
+      );
+    }
+
+    chatState.stream.lastSentText = sctx.latestRawText;
+
+    // Sync overflow chunks
+    for (let i = 1; i < editChunks.length; i++) {
+      const existingId = chatState.stream.chunks[i - 1];
+      if (existingId !== undefined) {
+        const r = await safeSend(() =>
+          sctx.api.editMessageText(chatId, existingId, editChunks[i], { parse_mode: "HTML" }),
+        );
+        if (!r.ok && r.reason === "parse error") {
+          await safeSend(() =>
+            sctx.api.editMessageText(chatId, existingId, stripHtml(editChunks[i])),
+          );
+        }
+      } else {
+        const r = await safeSend(() =>
+          sctx.api.sendMessage(chatId, editChunks[i], { parse_mode: "HTML" }),
+        );
+        if (r.ok && r.messageId !== undefined) {
+          chatState.stream.chunks.push(r.messageId);
+        }
+      }
+    }
+
+    // Delete stale overflow messages
+    const excessStart = editChunks.length - 1;
+    if (excessStart < chatState.stream.chunks.length) {
+      for (let j = chatState.stream.chunks.length - 1; j >= excessStart; j--) {
+        void safeSend(() => sctx.api.deleteMessage(chatId, chatState.stream.chunks[j]));
+      }
+      chatState.stream.chunks.length = Math.max(excessStart, 0);
+    }
+  } finally {
+    sctx.editing = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Final edit — stop timer, do one last edit, cleanup
+// ---------------------------------------------------------------------------
+
+async function doFinalEdit(chatId: number, sctx: ChatStreamCtx): Promise<void> {
+  if (sctx.editTimer) {
+    clearInterval(sctx.editTimer);
+    sctx.editTimer = null;
+  }
+
+  // Wait for sending/editing to finish
+  while (sctx.editing || sctx.sending) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  const chatState = getChatState(chatId);
+  if (sctx.latestRawText !== chatState.stream.lastSentText && chatState.stream.messageId !== null) {
+    await doEdit(chatId, sctx);
+  }
+
+  cleanupStream(chatId);
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup
+// ---------------------------------------------------------------------------
+
+function cleanupStream(chatId: number): void {
+  const sctx = chatStreamCtx.get(chatId);
+  if (sctx?.editTimer) {
+    clearInterval(sctx.editTimer);
+  }
+  chatStreamCtx.delete(chatId);
+
+  const chatState = getChatState(chatId);
   chatState.typingStop?.();
   chatState.typingStop = null;
-
-  const throttle = chatThrottles.get(chatId);
-  if (throttle) {
-    throttle.cancel();
-    chatThrottles.delete(chatId);
-  }
-
   chatState.stream.state = "FINAL";
-  latestTextByChat.delete(chatId);
 }
