@@ -400,3 +400,49 @@ export function cleanupStream(chatId: number): void {
   chatState.typingStop = null;
   chatState.stream.state = "FINAL";
 }
+
+/**
+ * Gracefully finalize any active stream for a chat: do one last edit with
+ * the latest accumulated text, then clean up. If no stream is active,
+ * just clean up immediately.
+ */
+export async function gracefulFinalizeStream(chatId: number): Promise<void> {
+  const sctx = chatStreamCtx.get(chatId);
+  if (!sctx) {
+    // No active stream — just clean up store state
+    const chatState = getChatState(chatId);
+    chatState.typingStop?.();
+    chatState.typingStop = null;
+    return;
+  }
+
+  // Mark as final so no new timer ticks produce edits
+  sctx.isFinal = true;
+
+  // Stop timer
+  if (sctx.editTimer) {
+    clearInterval(sctx.editTimer);
+    sctx.editTimer = null;
+  }
+
+  // Wait for in-flight operations
+  let waitCount = 0;
+  while (sctx.editing || sctx.sending) {
+    if (!isActive(chatId, sctx) || ++waitCount > 200) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  // Do final edit with latest accumulated text
+  if (isActive(chatId, sctx)) {
+    const chatState = getChatState(chatId);
+    if (
+      chatState.stream.messageId !== null &&
+      sctx.latestRawText !== chatState.stream.lastSentText
+    ) {
+      await doEdit(chatId, sctx);
+    }
+  }
+
+  // Clean up
+  cleanupStream(chatId);
+}

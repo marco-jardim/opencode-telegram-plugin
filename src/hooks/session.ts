@@ -3,7 +3,7 @@ import { getAllChatIds, getChatState, cleanupChatStream } from "../state/store.j
 import { getActiveSessionId } from "../state/mode.js";
 import { escapeHtml } from "../utils/format.js";
 import { safeSend } from "../utils/safeSend.js";
-import { cleanupStream } from "./message.js";
+import { cleanupStream, gracefulFinalizeStream } from "./message.js";
 
 export interface HookContext {
   api: Api<RawApi>;
@@ -23,6 +23,17 @@ function attachedChatIds(sessionID: string): number[] {
     const cs = getChatState(chatId);
     return cs.mode === "attached" && getActiveSessionId(chatId) === sessionID;
   });
+}
+
+/** Gracefully finalize stream, clean up store, then send idle message. */
+async function finalizeAndCleanup(chatId: number, api: Api<RawApi>): Promise<void> {
+  await gracefulFinalizeStream(chatId);
+  cleanupChatStream(chatId);
+  await safeSend(() =>
+    api.sendMessage(chatId, "💤 <i>Session idle</i>", {
+      parse_mode: "HTML",
+    }),
+  );
 }
 
 export function handleSessionCreated(
@@ -59,15 +70,9 @@ export function handleSessionIdle(
   const { api } = ctx;
 
   for (const chatId of matchingChatIds(sessionID)) {
-    // Clean up message streaming timer + stream state + typing indicator
-    cleanupStream(chatId);
-    cleanupChatStream(chatId);
-
-    void safeSend(() =>
-      api.sendMessage(chatId, "💤 <i>Session idle</i>", {
-        parse_mode: "HTML",
-      }),
-    );
+    // Gracefully finalize any active stream (does final edit with latest text)
+    // then clean up. finalizeAndCleanup is async — fire-and-forget.
+    void finalizeAndCleanup(chatId, api);
   }
 }
 
@@ -83,16 +88,18 @@ export function handleSessionError(
 
   // Errors go to all matching chats regardless of mode
   for (const chatId of matchingChatIds(sessionID)) {
-    cleanupStream(chatId);
-    cleanupChatStream(chatId);
-
-    void safeSend(() =>
-      api.sendMessage(
-        chatId,
-        `⚠️ <b>Error:</b> <code>${escapeHtml(error)}</code>`,
-        { parse_mode: "HTML" },
-      ),
-    );
+    // Gracefully finalize stream before reporting error
+    void (async () => {
+      await gracefulFinalizeStream(chatId);
+      cleanupChatStream(chatId);
+      await safeSend(() =>
+        api.sendMessage(
+          chatId,
+          `⚠️ <b>Error:</b> <code>${escapeHtml(error)}</code>`,
+          { parse_mode: "HTML" },
+        ),
+      );
+    })();
   }
 }
 
