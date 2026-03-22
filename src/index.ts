@@ -26,9 +26,9 @@ import { handleToolBefore, handleToolAfter } from "./hooks/tool.js";
 // ---------------------------------------------------------------------------
 
 function handleTelegramCommand(args: string | undefined): string {
-  const subcommand = (args ?? "").trim().toLowerCase();
-  const parts = subcommand.split(/\s+/);
-  const cmd = parts[0] || "help";
+  const raw = (args ?? "").trim();
+  const parts = raw.split(/\s+/);
+  const cmd = (parts[0] || "help").toLowerCase();
   const rest = parts.slice(1).join(" ").trim();
 
   switch (cmd) {
@@ -142,10 +142,25 @@ function handleTelegramCommand(args: string | undefined): string {
 // ---------------------------------------------------------------------------
 
 export const TelegramPlugin: Plugin = async (ctx) => {
+  console.log("[telegram-plugin] Plugin function called");
   const { client, directory } = ctx;
+  console.log("[telegram-plugin] ctx keys:", Object.keys(ctx));
 
   // ── Resolve configuration (config file + env vars) ─────────────────────
-  const config = resolveConfig();
+  let config: ReturnType<typeof resolveConfig>;
+  try {
+    config = resolveConfig();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await client.app.log({
+      body: {
+        service: "telegram-plugin",
+        level: "error",
+        message: "Failed to resolve config: " + msg,
+      },
+    });
+    return {};
+  }
 
   if (!config.botToken) {
     await client.app.log({
@@ -178,8 +193,19 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   }
 
   // ── Persistent mapping store ──────────────────────────────────────────
-  const dataDir = `${directory}/.opencode/telegram`;
-  initMapping(dataDir);
+  const dataDir = directory + "/.opencode/telegram";
+  try {
+    initMapping(dataDir);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await client.app.log({
+      body: {
+        service: "telegram-plugin",
+        level: "error",
+        message: "Failed to init mapping store: " + msg,
+      },
+    });
+  }
 
   // ── Create bot ────────────────────────────────────────────────────────
   const maskedToken = config.botToken.slice(0, 6) + "..." + config.botToken.slice(-4);
@@ -191,11 +217,24 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     },
   });
 
-  const bot = createBot({
-    token: config.botToken,
-    allowedUsers: config.allowedUsers,
-  });
-  injectClient(client);
+  let bot: ReturnType<typeof createBot>;
+  try {
+    bot = createBot({
+      token: config.botToken,
+      allowedUsers: config.allowedUsers,
+    });
+    injectClient(client);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await client.app.log({
+      body: {
+        service: "telegram-plugin",
+        level: "error",
+        message: "Failed to create bot: " + msg,
+      },
+    });
+    return {};
+  }
 
   // ── Hook context (shared by all event-driven hooks) ───────────────────
   const hookCtx: HookContext = {
@@ -204,9 +243,29 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   };
 
   // ── Start polling ─────────────────────────────────────────────────────
+  // First verify the token works by calling getMe
+  console.log("[telegram-plugin] Calling bot.api.getMe() to verify token...");
+  try {
+    const me = await bot.api.getMe();
+    console.log("[telegram-plugin] Bot identity:", me.username, "(id:", me.id, ")");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[telegram-plugin] getMe() FAILED:", msg);
+    await client.app.log({
+      body: {
+        service: "telegram-plugin",
+        level: "error",
+        message: "Telegram token verification failed (getMe): " + msg,
+      },
+    });
+    // Continue anyway — bot.start() will also fail and be caught
+  }
+
+  console.log("[telegram-plugin] Calling bot.start()...");
   void bot.start({
     drop_pending_updates: true,
     onStart: () => {
+      console.log("[telegram-plugin] bot.start() onStart callback fired");
       void client.app.log({
         body: {
           service: "telegram-plugin",
@@ -221,6 +280,7 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     ],
   }).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error("[telegram-plugin] bot.start() FAILED:", msg);
     void client.app.log({
       body: {
         service: "telegram-plugin",
