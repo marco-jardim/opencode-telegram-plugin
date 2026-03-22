@@ -47,15 +47,10 @@ export interface PartDeltaEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Per-chat accumulated text (built from deltas between part.updated events)
-// Key: chatId → { partID → accumulated text }
+// Per-part accumulated text (built from deltas)
 // ---------------------------------------------------------------------------
 
 const partTextAccumulator = new Map<string, string>();
-
-function getAccumulatedText(partID: string): string {
-  return partTextAccumulator.get(partID) ?? "";
-}
 
 function appendDelta(partID: string, delta: string): string {
   const current = partTextAccumulator.get(partID) ?? "";
@@ -67,6 +62,19 @@ function appendDelta(partID: string, delta: string): string {
 function clearAccumulated(partID: string): void {
   partTextAccumulator.delete(partID);
 }
+
+// ---------------------------------------------------------------------------
+// Per-chat: latest text snapshot + pending final flag
+// Used to catch up after PENDING_SEND completes
+// ---------------------------------------------------------------------------
+
+interface PendingText {
+  rawText: string;
+  html: string;
+  isFinal: boolean;
+}
+
+const pendingTextByChat = new Map<number, PendingText>();
 
 // ---------------------------------------------------------------------------
 // Throttle instances keyed by chatId
@@ -93,26 +101,16 @@ export function handlePartDelta(
   const { sessionID, partID, field, delta } = event.properties;
   if (field !== "text") return;
 
-  const { api, editIntervalMs } = ctx;
   const fullText = appendDelta(partID, delta);
-
   if (!fullText.trim()) return;
 
+  const { api, editIntervalMs } = ctx;
   const html = markdownToTelegramHtml(fullText);
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-
     const chatState = getChatState(chatId);
-    void processStreamForChat(
-      chatId,
-      chatState,
-      html,
-      fullText,
-      false, // delta is never final
-      api,
-      editIntervalMs,
-    );
+    dispatchToChat(chatId, chatState, html, fullText, false, api, editIntervalMs);
   }
 }
 
@@ -125,8 +123,6 @@ export function handlePartUpdated(
   ctx: HookContext,
 ): void {
   const { part } = event.properties;
-
-  // Only handle text parts
   if (part.type !== "text") return;
 
   const rawText = part.text ?? "";
@@ -135,7 +131,7 @@ export function handlePartUpdated(
   const { sessionID, id: partID } = part;
   const { api, editIntervalMs } = ctx;
 
-  // Update the accumulator with the full text (replaces any delta-built text)
+  // Update accumulator with full snapshot
   partTextAccumulator.set(partID, rawText);
 
   const isFinal = part.state === "complete";
@@ -143,30 +139,41 @@ export function handlePartUpdated(
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-
     const chatState = getChatState(chatId);
-    void processStreamForChat(
-      chatId,
-      chatState,
-      html,
-      rawText,
-      isFinal,
-      api,
-      editIntervalMs,
-    );
+    dispatchToChat(chatId, chatState, html, rawText, isFinal, api, editIntervalMs);
   }
 
-  // Clean up accumulator when part is complete
   if (isFinal) {
     clearAccumulated(partID);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Core streaming logic (unchanged state machine, but called from new handlers)
+// Dispatch: if PENDING_SEND, buffer; otherwise process immediately
 // ---------------------------------------------------------------------------
 
-/** Edit a Telegram message with HTML, falling back to plain text on parse errors. */
+function dispatchToChat(
+  chatId: number,
+  chatState: ChatState,
+  html: string,
+  rawText: string,
+  isFinal: boolean,
+  api: Api<RawApi>,
+  editIntervalMs: number,
+): void {
+  if (chatState.stream.state === "PENDING_SEND") {
+    // Buffer the latest text — processStreamForChat will pick it up after send completes
+    pendingTextByChat.set(chatId, { rawText, html, isFinal });
+    return;
+  }
+
+  void processStreamForChat(chatId, chatState, html, rawText, isFinal, api, editIntervalMs);
+}
+
+// ---------------------------------------------------------------------------
+// Core streaming state machine
+// ---------------------------------------------------------------------------
+
 async function editWithFallback(
   api: Api<RawApi>,
   chatId: number,
@@ -197,14 +204,13 @@ async function processStreamForChat(
     chatState.stream.state === "IDLE" ||
     chatState.stream.state === "FINAL"
   ) {
-    // If transitioning from FINAL, reset stream state for the new response
     if (chatState.stream.state === "FINAL") {
       chatState.stream.chunks = [];
       chatState.stream.messageId = null;
       chatState.stream.lastSentText = "";
       chatState.stream.streamGeneration++;
     }
-    // Lock immediately to prevent duplicate sends on concurrent events
+    // Lock immediately to prevent duplicate sends
     chatState.stream.state = "PENDING_SEND";
     if (!chatState.typingStop) {
       chatState.typingStop = startTyping(api, chatId);
@@ -221,6 +227,7 @@ async function processStreamForChat(
       chatState.typingStop?.();
       chatState.typingStop = null;
       chatState.stream.state = "IDLE";
+      pendingTextByChat.delete(chatId);
       return;
     }
 
@@ -228,7 +235,6 @@ async function processStreamForChat(
     chatState.stream.state = "SENT";
     chatState.stream.lastSentText = rawText;
 
-    // Send overflow chunks as follow-up messages
     for (let i = 1; i < chunks.length; i++) {
       const r = await safeSend(() =>
         api.sendMessage(chatId, chunks[i], { parse_mode: "HTML" }),
@@ -240,6 +246,18 @@ async function processStreamForChat(
 
     if (isFinal) {
       await finalizeStream(chatId, chatState);
+      pendingTextByChat.delete(chatId);
+      return;
+    }
+
+    // ── Catch up: process any text that arrived during PENDING_SEND ──────
+    const buffered = pendingTextByChat.get(chatId);
+    pendingTextByChat.delete(chatId);
+    if (buffered && buffered.rawText !== rawText) {
+      void processStreamForChat(
+        chatId, chatState, buffered.html, buffered.rawText,
+        buffered.isFinal, api, editIntervalMs,
+      );
     }
     return;
   }
@@ -255,7 +273,6 @@ async function processStreamForChat(
 
     const capturedGeneration = chatState.stream.streamGeneration;
     const doEdit = async (): Promise<void> => {
-      // Guard: bail if the stream was reset between scheduling and execution
       if (
         chatState.stream.streamGeneration !== capturedGeneration ||
         (chatState.stream.state !== "EDITING" &&
@@ -290,7 +307,6 @@ async function processStreamForChat(
 
       chatState.stream.lastSentText = rawText;
 
-      // Sync overflow chunks — edit existing or send new ones
       for (let i = 1; i < editChunks.length; i++) {
         const existingId = chatState.stream.chunks[i - 1];
         if (existingId !== undefined) {
@@ -305,7 +321,6 @@ async function processStreamForChat(
         }
       }
 
-      // Delete stale overflow messages if text shrank
       const excessStart = editChunks.length - 1;
       if (excessStart < chatState.stream.chunks.length) {
         for (let j = chatState.stream.chunks.length - 1; j >= excessStart; j--) {
@@ -316,7 +331,6 @@ async function processStreamForChat(
     };
 
     if (isFinal) {
-      // Cancel any pending throttled update and perform one final synchronous edit
       const pending = chatThrottles.get(chatId);
       if (pending) {
         pending.cancel();
@@ -337,17 +351,14 @@ async function finalizeStream(
   chatId: number,
   chatState: ChatState,
 ): Promise<void> {
-  // Stop typing indicator
   chatState.typingStop?.();
   chatState.typingStop = null;
 
-  // Cancel and discard throttle
   const throttle = chatThrottles.get(chatId);
   if (throttle) {
     throttle.cancel();
     chatThrottles.delete(chatId);
   }
 
-  // Mark stream as finalized — stays FINAL until a new stream starts
   chatState.stream.state = "FINAL";
 }
