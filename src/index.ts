@@ -42,7 +42,7 @@ function handleTelegramCommand(args: string | undefined): string {
       }
       writeConfigFile({ botToken: rest });
       const masked = rest.slice(0, 6) + "..." + rest.slice(-4);
-      return `**Bot token saved** to config file.\n\n- Token: \`${masked}\`\n- File: \`${getConfigPath()}\`\n\n**Restart OpenCode** for the change to take effect.`;
+      return "**Bot token saved** to config file.\n\n- Token: `" + masked + "`\n- File: `" + getConfigPath() + "`\n\n**Restart OpenCode** for the change to take effect.";
     }
 
     case "remove-token": {
@@ -61,7 +61,7 @@ function handleTelegramCommand(args: string | undefined): string {
         return "**Invalid user ID(s)**: " + invalid.map(id => "`" + id + "`").join(", ") + "\n\nUser IDs must be numeric. Message @jsondumpbot on Telegram to get your ID (look for the `from.id` field).";
       }
       writeConfigFile({ allowedUsers: ids.join(",") });
-      return `**Allowed users saved**: ${ids.map(id => `\`${id}\``).join(", ")}\n\n**Restart OpenCode** for the change to take effect.`;
+      return "**Allowed users saved**: " + ids.map(id => "`" + id + "`").join(", ") + "\n\n**Restart OpenCode** for the change to take effect.";
     }
 
     case "remove-users": {
@@ -75,7 +75,7 @@ function handleTelegramCommand(args: string | undefined): string {
         return "**Usage**: `/telegram set-interval <milliseconds>`\n\nSet the minimum interval between message edits during streaming.\nDefault: `2500` (2.5 seconds).";
       }
       writeConfigFile({ editIntervalMs: ms });
-      return `**Edit interval saved**: \`${ms}ms\`\n\n**Restart OpenCode** for the change to take effect.`;
+      return "**Edit interval saved**: `" + ms + "ms`\n\n**Restart OpenCode** for the change to take effect.";
     }
 
     case "auto-attach": {
@@ -94,13 +94,13 @@ function handleTelegramCommand(args: string | undefined): string {
     }
 
     case "path": {
-      return `**Config file path**: \`${getConfigPath()}\``;
+      return "**Config file path**: `" + getConfigPath() + "`";
     }
 
     case "show": {
       const file = readConfigFile();
       if (Object.keys(file).length === 0) {
-        return `**Config file is empty or doesn't exist.**\n\nPath: \`${getConfigPath()}\`\nUse \`/telegram set-token <TOKEN>\` to get started.`;
+        return "**Config file is empty or doesn't exist.**\n\nPath: `" + getConfigPath() + "`\nUse `/telegram set-token <TOKEN>` to get started.";
       }
       // Mask the token for display
       const display: Record<string, unknown> = { ...file };
@@ -108,7 +108,7 @@ function handleTelegramCommand(args: string | undefined): string {
         const t = display.botToken as string;
         display.botToken = t.slice(0, 6) + "..." + t.slice(-4);
       }
-      return `**Config file contents** (\`${getConfigPath()}\`):\n\n\`\`\`json\n${JSON.stringify(display, null, 2)}\n\`\`\``;
+      return "**Config file contents** (`" + getConfigPath() + "`):\n\n```json\n" + JSON.stringify(display, null, 2) + "\n```";
     }
 
     case "help":
@@ -142,9 +142,7 @@ function handleTelegramCommand(args: string | undefined): string {
 // ---------------------------------------------------------------------------
 
 export const TelegramPlugin: Plugin = async (ctx) => {
-  console.log("[telegram-plugin] Plugin function called");
   const { client, directory } = ctx;
-  console.log("[telegram-plugin] ctx keys:", Object.keys(ctx));
 
   // ── Resolve configuration (config file + env vars) ─────────────────────
   let config: ReturnType<typeof resolveConfig>;
@@ -243,29 +241,9 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   };
 
   // ── Start polling ─────────────────────────────────────────────────────
-  // First verify the token works by calling getMe
-  console.log("[telegram-plugin] Calling bot.api.getMe() to verify token...");
-  try {
-    const me = await bot.api.getMe();
-    console.log("[telegram-plugin] Bot identity:", me.username, "(id:", me.id, ")");
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[telegram-plugin] getMe() FAILED:", msg);
-    await client.app.log({
-      body: {
-        service: "telegram-plugin",
-        level: "error",
-        message: "Telegram token verification failed (getMe): " + msg,
-      },
-    });
-    // Continue anyway — bot.start() will also fail and be caught
-  }
-
-  console.log("[telegram-plugin] Calling bot.start()...");
   void bot.start({
     drop_pending_updates: true,
     onStart: () => {
-      console.log("[telegram-plugin] bot.start() onStart callback fired");
       void client.app.log({
         body: {
           service: "telegram-plugin",
@@ -280,7 +258,6 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     ],
   }).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[telegram-plugin] bot.start() FAILED:", msg);
     void client.app.log({
       body: {
         service: "telegram-plugin",
@@ -323,13 +300,33 @@ export const TelegramPlugin: Plugin = async (ctx) => {
 
     // ── Event dispatcher ──────────────────────────────────────────────
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
+      // DEBUG: Log all events to structured logging
+      if (event.type.startsWith("message.")) {
+        void client.app.log({
+          body: {
+            service: "telegram-plugin",
+            level: "debug",
+            message: "EVENT " + event.type + " keys=" + (event.properties && typeof event.properties === "object" ? Object.keys(event.properties as Record<string, unknown>).join(",") : "none"),
+          },
+        });
+      }
+
       if (!event.properties || typeof event.properties !== "object") return;
       const props = event.properties as Record<string, unknown>;
 
       switch (event.type) {
         case "message.updated":
         case "message.part.updated": {
-          if (!Array.isArray(props.parts)) break;
+          if (!Array.isArray(props.parts)) {
+            void client.app.log({
+              body: {
+                service: "telegram-plugin",
+                level: "debug",
+                message: "EVENT " + event.type + " SKIPPED: parts not array. props keys=" + Object.keys(props).join(",") + " parts type=" + typeof props.parts,
+              },
+            });
+            break;
+          }
           handleMessageUpdated(
             event as Parameters<typeof handleMessageUpdated>[0],
             hookCtx,
