@@ -12,9 +12,11 @@ import {
 } from "./config.js";
 
 import {
+  handleMessageInfo,
   handlePartUpdated,
   handlePartDelta,
   type HookContext,
+  type MessageUpdatedEvent,
   type PartUpdatedEvent,
   type PartDeltaEvent,
 } from "./hooks/message.js";
@@ -319,8 +321,9 @@ export const TelegramPlugin: Plugin = async (ctx) => {
           handlePartUpdated(event as PartUpdatedEvent, hookCtx);
           break;
 
-        // ── message.updated: metadata only (role, cost, tokens) — skip
+        // ── message.updated: metadata — track assistant message IDs
         case "message.updated":
+          handleMessageInfo(event as MessageUpdatedEvent);
           break;
 
         case "session.created":

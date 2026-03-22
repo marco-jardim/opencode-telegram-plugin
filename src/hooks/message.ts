@@ -13,13 +13,24 @@ import { startTyping } from "../utils/typing.js";
 
 export interface HookContext {
   api: Api<RawApi>;
-  /** Minimum milliseconds between successive editMessageText calls per chat */
   editIntervalMs: number;
 }
 
 // ---------------------------------------------------------------------------
 // Event shapes (matching actual OpenCode SDK events)
 // ---------------------------------------------------------------------------
+
+export interface MessageUpdatedEvent {
+  type: "message.updated";
+  properties: {
+    info: {
+      id: string;
+      sessionID: string;
+      role: string;
+      [key: string]: unknown;
+    };
+  };
+}
 
 export interface PartUpdatedEvent {
   type: "message.part.updated";
@@ -47,6 +58,24 @@ export interface PartDeltaEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Track which messageIDs belong to assistant (vs user)
+// ---------------------------------------------------------------------------
+
+const assistantMessageIds = new Set<string>();
+
+/** Called when message.updated fires — records assistant message IDs */
+export function handleMessageInfo(event: MessageUpdatedEvent): void {
+  const { info } = event.properties;
+  if (info.role === "assistant") {
+    assistantMessageIds.add(info.id);
+  }
+}
+
+function isAssistantMessage(messageID: string): boolean {
+  return assistantMessageIds.has(messageID);
+}
+
+// ---------------------------------------------------------------------------
 // Per-part accumulated text (built from deltas)
 // ---------------------------------------------------------------------------
 
@@ -64,17 +93,23 @@ function clearAccumulated(partID: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Per-chat: latest text snapshot + pending final flag
-// Used to catch up after PENDING_SEND completes
+// Per-chat: latest text + html for the current stream
+// The throttled doEdit reads from here to always use the freshest text.
 // ---------------------------------------------------------------------------
 
-interface PendingText {
+interface LatestText {
   rawText: string;
   html: string;
   isFinal: boolean;
 }
 
-const pendingTextByChat = new Map<number, PendingText>();
+const latestTextByChat = new Map<number, LatestText>();
+
+// ---------------------------------------------------------------------------
+// Per-chat: text buffered during PENDING_SEND
+// ---------------------------------------------------------------------------
+
+const pendingTextByChat = new Map<number, LatestText>();
 
 // ---------------------------------------------------------------------------
 // Throttle instances keyed by chatId
@@ -98,8 +133,11 @@ export function handlePartDelta(
   event: PartDeltaEvent,
   ctx: HookContext,
 ): void {
-  const { sessionID, partID, field, delta } = event.properties;
+  const { sessionID, messageID, partID, field, delta } = event.properties;
   if (field !== "text") return;
+
+  // Only stream assistant messages
+  if (!isAssistantMessage(messageID)) return;
 
   const fullText = appendDelta(partID, delta);
   if (!fullText.trim()) return;
@@ -110,6 +148,8 @@ export function handlePartDelta(
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
     const chatState = getChatState(chatId);
+    // Always update latest text for this chat
+    latestTextByChat.set(chatId, { rawText: fullText, html, isFinal: false });
     dispatchToChat(chatId, chatState, html, fullText, false, api, editIntervalMs);
   }
 }
@@ -125,13 +165,15 @@ export function handlePartUpdated(
   const { part } = event.properties;
   if (part.type !== "text") return;
 
+  // Only stream assistant messages
+  if (!isAssistantMessage(part.messageID)) return;
+
   const rawText = part.text ?? "";
   if (!rawText.trim()) return;
 
   const { sessionID, id: partID } = part;
   const { api, editIntervalMs } = ctx;
 
-  // Update accumulator with full snapshot
   partTextAccumulator.set(partID, rawText);
 
   const isFinal = part.state === "complete";
@@ -140,6 +182,7 @@ export function handlePartUpdated(
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
     const chatState = getChatState(chatId);
+    latestTextByChat.set(chatId, { rawText, html, isFinal });
     dispatchToChat(chatId, chatState, html, rawText, isFinal, api, editIntervalMs);
   }
 
@@ -149,7 +192,7 @@ export function handlePartUpdated(
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch: if PENDING_SEND, buffer; otherwise process immediately
+// Dispatch: if PENDING_SEND, buffer; otherwise process
 // ---------------------------------------------------------------------------
 
 function dispatchToChat(
@@ -162,7 +205,6 @@ function dispatchToChat(
   editIntervalMs: number,
 ): void {
   if (chatState.stream.state === "PENDING_SEND") {
-    // Buffer the latest text — processStreamForChat will pick it up after send completes
     pendingTextByChat.set(chatId, { rawText, html, isFinal });
     return;
   }
@@ -210,7 +252,6 @@ async function processStreamForChat(
       chatState.stream.lastSentText = "";
       chatState.stream.streamGeneration++;
     }
-    // Lock immediately to prevent duplicate sends
     chatState.stream.state = "PENDING_SEND";
     if (!chatState.typingStop) {
       chatState.typingStop = startTyping(api, chatId);
@@ -250,7 +291,7 @@ async function processStreamForChat(
       return;
     }
 
-    // ── Catch up: process any text that arrived during PENDING_SEND ──────
+    // Catch up with text that arrived during PENDING_SEND
     const buffered = pendingTextByChat.get(chatId);
     pendingTextByChat.delete(chatId);
     if (buffered && buffered.rawText !== rawText) {
@@ -272,6 +313,9 @@ async function processStreamForChat(
     chatState.stream.state = "EDITING";
 
     const capturedGeneration = chatState.stream.streamGeneration;
+
+    // doEdit reads the LATEST text from latestTextByChat at execution time,
+    // not the stale text from when the throttle was scheduled.
     const doEdit = async (): Promise<void> => {
       if (
         chatState.stream.streamGeneration !== capturedGeneration ||
@@ -284,7 +328,14 @@ async function processStreamForChat(
       const msgId = chatState.stream.messageId;
       if (msgId === null) return;
 
-      const editChunks = chunkMessage(html);
+      // Use the freshest text available
+      const latest = latestTextByChat.get(chatId);
+      const editHtml = latest ? latest.html : html;
+      const editRawText = latest ? latest.rawText : rawText;
+
+      if (editRawText === chatState.stream.lastSentText) return;
+
+      const editChunks = chunkMessage(editHtml);
       if (editChunks.length === 0) return;
 
       const editResult = await safeSend(() =>
@@ -305,7 +356,7 @@ async function processStreamForChat(
         }
       }
 
-      chatState.stream.lastSentText = rawText;
+      chatState.stream.lastSentText = editRawText;
 
       for (let i = 1; i < editChunks.length; i++) {
         const existingId = chatState.stream.chunks[i - 1];
@@ -361,4 +412,5 @@ async function finalizeStream(
   }
 
   chatState.stream.state = "FINAL";
+  latestTextByChat.delete(chatId);
 }
