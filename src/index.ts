@@ -300,13 +300,20 @@ export const TelegramPlugin: Plugin = async (ctx) => {
 
     // ── Event dispatcher ──────────────────────────────────────────────
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
-      // DIAG: Send message events info to Telegram for debugging
+      // DIAG: Send first few message events with full JSON shape
       const DIAG_CHAT = 92723787;
-      if (event.type.startsWith("message.")) {
-        const info = event.properties && typeof event.properties === "object"
-          ? "keys=" + Object.keys(event.properties as Record<string, unknown>).join(",")
-          : "no-props";
-        void bot.api.sendMessage(DIAG_CHAT, "[DIAG] " + event.type + " " + info).catch(() => {});
+      if (event.type === "message.updated" || event.type === "message.part.updated" || event.type === "message.part.delta") {
+        // Only send first 2 of each type to avoid spam
+        const diagKey = "_diag_" + event.type;
+        const diagMap = (globalThis as any).__diagCounts ??= {};
+        diagMap[diagKey] = (diagMap[diagKey] ?? 0) + 1;
+        if (diagMap[diagKey] <= 2) {
+          try {
+            const json = JSON.stringify(event.properties, null, 2);
+            const truncated = json.length > 3800 ? json.slice(0, 3800) + "\n..." : json;
+            void bot.api.sendMessage(DIAG_CHAT, "[DIAG] " + event.type + "\n```json\n" + truncated + "\n```", { parse_mode: "Markdown" }).catch(() => {});
+          } catch { /* ignore */ }
+        }
       }
 
       if (!event.properties || typeof event.properties !== "object") return;
