@@ -77,7 +77,7 @@ Create `~/.config/opencode/telegram.json`:
 
 ### 4. (Optional) Restrict access
 
-Restrict the bot to your Telegram user ID only. Get your ID by messaging [@userinfobot](https://t.me/userinfobot).
+Restrict the bot to your Telegram user ID only. To get your ID, message [@jsondumpbot](https://t.me/jsondumpbot) on Telegram — your ID is in the `from.id` field of the response.
 
 ```
 /telegram set-users 123456789
