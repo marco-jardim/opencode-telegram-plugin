@@ -58,7 +58,7 @@ function handleTelegramCommand(args: string | undefined): string {
       const ids = rest.split(",").map(s => s.trim()).filter(Boolean);
       const invalid = ids.filter(id => !/^\d+$/.test(id));
       if (invalid.length > 0) {
-        return `**Invalid user ID(s)**: ${invalid.map(id => `\`${id}\``).join(", ")}\n\nUser IDs must be numeric. Message @jsondumpbot on Telegram to get your ID (look for the `from.id` field).`;
+        return "**Invalid user ID(s)**: " + invalid.map(id => "`" + id + "`").join(", ") + "\n\nUser IDs must be numeric. Message @jsondumpbot on Telegram to get your ID (look for the `from.id` field).";
       }
       writeConfigFile({ allowedUsers: ids.join(",") });
       return `**Allowed users saved**: ${ids.map(id => `\`${id}\``).join(", ")}\n\n**Restart OpenCode** for the change to take effect.`;
