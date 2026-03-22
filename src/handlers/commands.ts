@@ -1,6 +1,6 @@
 import type { Context } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { getChatState, cleanupChatStream, registerCallback } from "../state/store.js";
+import { getChatState, cleanupChatStream, registerCallback, type SelectedModel, type EffortLevel } from "../state/store.js";
 import {
   getActiveSessionId,
   getMode,
@@ -70,8 +70,11 @@ const HELP_TEXT = `
 Just send a message to prompt OpenCode
 /abort       — Abort the current running operation
 
-<b>Info &amp; Config</b>
-/model       — Show available AI models
+<b>Model &amp; Config</b>
+/model              — List available models
+/model provider/id  — Set active model (e.g. <code>/model anthropic/claude-sonnet-4-20250514</code>)
+/model reset        — Reset to default model
+/effort [low|medium|high] — Set reasoning effort (default: high)
 /status      — Show current bot status
 /help        — Show this help message
 `.trim();
@@ -326,6 +329,83 @@ export async function switchCommand(ctx: Context): Promise<void> {
 }
 
 export async function modelCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const arg = typeof ctx.match === "string" ? ctx.match.trim() : "";
+
+  // /model reset — clear override
+  if (arg.toLowerCase() === "reset") {
+    getChatState(chatId).selectedModel = null;
+    await safeSend(() =>
+      ctx.reply("✅ Model reset to default.", { parse_mode: "HTML" }),
+    );
+    return;
+  }
+
+  // /model provider/model-id — set model
+  if (arg && arg.includes("/")) {
+    const slashIdx = arg.indexOf("/");
+    const providerID = arg.substring(0, slashIdx);
+    const modelID = arg.substring(slashIdx + 1);
+
+    if (!providerID || !modelID) {
+      await safeSend(() =>
+        ctx.reply("Usage: <code>/model provider/model-id</code>\nExample: <code>/model anthropic/claude-sonnet-4-20250514</code>", { parse_mode: "HTML" }),
+      );
+      return;
+    }
+
+    // Validate against available providers/models
+    try {
+      const { data } = await getClient().config.providers();
+      const providers = data?.providers ?? [];
+      const provider = providers.find((p) => p.id === providerID);
+
+      if (!provider) {
+        const available = providers.map((p) => p.id).join(", ");
+        await safeSend(() =>
+          ctx.reply(`❌ Unknown provider: <code>${escapeHtml(providerID)}</code>\nAvailable: ${available}`, { parse_mode: "HTML" }),
+        );
+        return;
+      }
+
+      const model = (provider.models ?? {})[modelID];
+      if (!model) {
+        const available = Object.keys(provider.models ?? {}).slice(0, 10).join("\n  • ");
+        await safeSend(() =>
+          ctx.reply(
+            `❌ Unknown model: <code>${escapeHtml(modelID)}</code>\n\n` +
+              `Available models for <b>${escapeHtml(provider.name || provider.id)}</b>:\n  • ${available}`,
+            { parse_mode: "HTML" },
+          ),
+        );
+        return;
+      }
+
+      const selected: SelectedModel = {
+        providerID,
+        modelID,
+        displayName: model.name ?? modelID,
+      };
+      getChatState(chatId).selectedModel = selected;
+
+      await safeSend(() =>
+        ctx.reply(
+          `✅ Model set to:\n<b>${escapeHtml(selected.displayName)}</b>\n<code>${escapeHtml(providerID)}/${escapeHtml(modelID)}</code>`,
+          { parse_mode: "HTML" },
+        ),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await safeSend(() =>
+        ctx.reply(`❌ Failed to validate model: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+      );
+    }
+    return;
+  }
+
+  // /model (no args) — list available models
   try {
     const { data } = await getClient().config.providers();
     const providers = data?.providers ?? [];
@@ -335,7 +415,6 @@ export async function modelCommand(ctx: Context): Promise<void> {
       return;
     }
 
-    // Build per-provider blocks, then send in chunks to stay under 4096 chars
     const blocks: string[] = [];
     for (const provider of providers) {
       const modelEntries = Object.entries(provider.models ?? {});
@@ -355,9 +434,14 @@ export async function modelCommand(ctx: Context): Promise<void> {
       return;
     }
 
-    // Send in batches that fit under Telegram's 4096 char limit
+    // Show current selection
+    const state = getChatState(chatId);
+    const currentLine = state.selectedModel
+      ? `\nCurrent: <b>${escapeHtml(state.selectedModel.displayName)}</b> (<code>${escapeHtml(state.selectedModel.providerID)}/${escapeHtml(state.selectedModel.modelID)}</code>)\n`
+      : "\nCurrent: <i>default</i>\n";
+
     const MAX_LEN = 4000;
-    let current = "<b>Available Models:</b>\n";
+    let current = `<b>Available Models:</b>${currentLine}\nUse <code>/model provider/model-id</code> to set.\n`;
     for (const block of blocks) {
       if (current.length + block.length + 2 > MAX_LEN) {
         await safeSend(() =>
@@ -380,6 +464,41 @@ export async function modelCommand(ctx: Context): Promise<void> {
   }
 }
 
+export async function effortCommand(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const arg = typeof ctx.match === "string" ? ctx.match.trim().toLowerCase() : "";
+  const state = getChatState(chatId);
+
+  if (!arg) {
+    await safeSend(() =>
+      ctx.reply(
+        `Current effort: <b>${escapeHtml(state.effort)}</b>\n\nUsage: <code>/effort low|medium|high</code>`,
+        { parse_mode: "HTML" },
+      ),
+    );
+    return;
+  }
+
+  const validEfforts: EffortLevel[] = ["low", "medium", "high"];
+  if (!validEfforts.includes(arg as EffortLevel)) {
+    await safeSend(() =>
+      ctx.reply(
+        `❌ Invalid effort level: <code>${escapeHtml(arg)}</code>\nValid: <code>low</code>, <code>medium</code>, <code>high</code>`,
+        { parse_mode: "HTML" },
+      ),
+    );
+    return;
+  }
+
+  state.effort = arg as EffortLevel;
+  const emoji = { low: "🔋", medium: "⚡", high: "🔥" }[state.effort];
+  await safeSend(() =>
+    ctx.reply(`${emoji} Effort set to: <b>${escapeHtml(state.effort)}</b>`, { parse_mode: "HTML" }),
+  );
+}
+
 export async function statusCommand(ctx: Context): Promise<void> {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
@@ -394,6 +513,11 @@ export async function statusCommand(ctx: Context): Promise<void> {
     detached: "🔌",
   };
 
+  const effortEmoji = { low: "🔋", medium: "⚡", high: "🔥" }[state.effort] ?? "❓";
+  const modelLine = state.selectedModel
+    ? `<code>${escapeHtml(state.selectedModel.providerID)}/${escapeHtml(state.selectedModel.modelID)}</code>`
+    : "<i>default</i>";
+
   const lines = [
     `<b>Bot Status</b>`,
     ``,
@@ -401,6 +525,8 @@ export async function statusCommand(ctx: Context): Promise<void> {
     activeId
       ? `Session: <code>${escapeHtml(activeId)}</code>`
       : `Session: <i>none</i>`,
+    `Model:   ${modelLine}`,
+    `Effort:  ${effortEmoji} <b>${escapeHtml(state.effort)}</b>`,
     `Stream:  ${state.stream.state !== "IDLE" && state.stream.state !== "FINAL" ? "⏳ active" : "⬜ idle"}`,
   ];
 

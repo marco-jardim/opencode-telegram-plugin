@@ -19,11 +19,21 @@ export interface PendingPermission {
   timestamp: number;
 }
 
+export interface SelectedModel {
+  providerID: string;
+  modelID: string;
+  displayName: string;
+}
+
+export type EffortLevel = "low" | "medium" | "high";
+
 export interface ChatState {
   chatId: number;
   mode: "attached" | "independent" | "detached";
   attachedSessionId: string | null;
   independentSessionId: string | null;
+  selectedModel: SelectedModel | null;
+  effort: EffortLevel;
   stream: StreamTracker;
   pendingPermissions: Map<string, PendingPermission>;
   typingStop: (() => void) | null;
@@ -60,6 +70,8 @@ function makeDefaultChatState(chatId: number): ChatState {
     mode: "detached",
     attachedSessionId: null,
     independentSessionId: null,
+    selectedModel: null,
+    effort: "high",
     stream: makeDefaultStream(),
     pendingPermissions: new Map(),
     typingStop: null,

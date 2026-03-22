@@ -10,6 +10,7 @@ import {
   sessionsCommand,
   switchCommand,
   modelCommand,
+  effortCommand,
   statusCommand,
   abortCommand,
   setClient as setCommandsClient,
@@ -84,6 +85,7 @@ export function createBot(opts: CreateBotOptions): Bot {
   bot.command("sessions", sessionsCommand);
   bot.command("switch", switchCommand);
   bot.command("model", modelCommand);
+  bot.command("effort", effortCommand);
   bot.command("status", statusCommand);
   bot.command("abort", abortCommand);
 

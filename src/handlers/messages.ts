@@ -1,5 +1,6 @@
 import type { Context } from "grammy";
 import { getActiveSessionId, attachSession } from "../state/mode.js";
+import { getChatState } from "../state/store.js";
 import { safeSend } from "../utils/safeSend.js";
 import { escapeHtml } from "../utils/format.js";
 
@@ -18,7 +19,11 @@ interface OpenCodeClient {
     list(): Promise<{ data: SessionSummary[] }>;
     prompt(params: {
       path: { id: string };
-      body: { parts: [{ type: "text"; text: string }] };
+      body: {
+        parts: [{ type: "text"; text: string }];
+        model?: { providerID: string; modelID: string };
+        effort?: string;
+      };
     }): Promise<{ data: { info: unknown; parts: unknown[] } }>;
   };
 }
@@ -119,11 +124,29 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   // ------------------------------------------------------------------
   const capturedSessionId = sessionId; // capture before any async gap
 
+  // Build prompt body with optional model/effort overrides
+  const chatState = getChatState(chatId);
+  const promptBody: {
+    parts: [{ type: "text"; text: string }];
+    model?: { providerID: string; modelID: string };
+    effort?: string;
+  } = { parts: [{ type: "text", text }] };
+
+  if (chatState.selectedModel) {
+    promptBody.model = {
+      providerID: chatState.selectedModel.providerID,
+      modelID: chatState.selectedModel.modelID,
+    };
+  }
+  if (chatState.effort !== "high") {
+    promptBody.effort = chatState.effort;
+  }
+
   try {
     void getClient()
       .session.prompt({
         path: { id: capturedSessionId },
-        body: { parts: [{ type: "text", text }] },
+        body: promptBody,
       })
       .catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
