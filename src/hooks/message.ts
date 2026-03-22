@@ -308,8 +308,8 @@ async function processStreamForChat(
     chatState.stream.state === "SENT" ||
     chatState.stream.state === "EDITING"
   ) {
-    if (rawText === chatState.stream.lastSentText && !isFinal) return;
-
+    // Don't early-return based on rawText vs lastSentText here.
+    // doEdit reads latestTextByChat and has its own no-op guard.
     chatState.stream.state = "EDITING";
 
     const capturedGeneration = chatState.stream.streamGeneration;
