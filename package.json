@@ -4,6 +4,11 @@
   "description": "Telegram bot plugin for OpenCode — remote control and independent sessions from your phone",
   "type": "module",
   "main": "./src/index.ts",
+  "files": [
+    "src/",
+    "LICENSE",
+    "README.md"
+  ],
   "license": "GPL-3.0-or-later",
   "keywords": [
     "opencode",
