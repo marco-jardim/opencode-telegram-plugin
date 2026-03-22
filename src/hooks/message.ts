@@ -17,22 +17,61 @@ export interface HookContext {
   editIntervalMs: number;
 }
 
-interface MessagePart {
-  type: string;
-  text?: string;
-  state?: string;
-}
+// ---------------------------------------------------------------------------
+// Event shapes (matching actual OpenCode SDK events)
+// ---------------------------------------------------------------------------
 
-interface MessageEvent {
-  type: "message.updated";
+export interface PartUpdatedEvent {
+  type: "message.part.updated";
   properties: {
-    sessionID: string;
-    messageID: string;
-    parts: MessagePart[];
+    part: {
+      id: string;
+      sessionID: string;
+      messageID: string;
+      type: string;
+      text?: string;
+      state?: string;
+    };
   };
 }
 
-/** Rate-limiting throttle instances keyed by chatId */
+export interface PartDeltaEvent {
+  type: "message.part.delta";
+  properties: {
+    sessionID: string;
+    messageID: string;
+    partID: string;
+    field: string;
+    delta: string;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Per-chat accumulated text (built from deltas between part.updated events)
+// Key: chatId → { partID → accumulated text }
+// ---------------------------------------------------------------------------
+
+const partTextAccumulator = new Map<string, string>();
+
+function getAccumulatedText(partID: string): string {
+  return partTextAccumulator.get(partID) ?? "";
+}
+
+function appendDelta(partID: string, delta: string): string {
+  const current = partTextAccumulator.get(partID) ?? "";
+  const updated = current + delta;
+  partTextAccumulator.set(partID, updated);
+  return updated;
+}
+
+function clearAccumulated(partID: string): void {
+  partTextAccumulator.delete(partID);
+}
+
+// ---------------------------------------------------------------------------
+// Throttle instances keyed by chatId
+// ---------------------------------------------------------------------------
+
 const chatThrottles = new Map<number, Throttle>();
 
 function getOrCreateThrottle(chatId: number, intervalMs: number): Throttle {
@@ -43,23 +82,63 @@ function getOrCreateThrottle(chatId: number, intervalMs: number): Throttle {
   return t;
 }
 
-export function handleMessageUpdated(
-  event: MessageEvent,
+// ---------------------------------------------------------------------------
+// Handle message.part.delta — incremental streaming text
+// ---------------------------------------------------------------------------
+
+export function handlePartDelta(
+  event: PartDeltaEvent,
   ctx: HookContext,
 ): void {
-  const { sessionID, parts } = event.properties;
+  const { sessionID, partID, field, delta } = event.properties;
+  if (field !== "text") return;
+
   const { api, editIntervalMs } = ctx;
+  const fullText = appendDelta(partID, delta);
 
-  const textParts = parts.filter((p) => p.type === "text");
-  if (textParts.length === 0) return;
+  if (!fullText.trim()) return;
 
-  const rawText = textParts.map((p) => p.text ?? "").join("");
+  const html = markdownToTelegramHtml(fullText);
+
+  for (const chatId of getAllChatIds()) {
+    if (getActiveSessionId(chatId) !== sessionID) continue;
+
+    const chatState = getChatState(chatId);
+    void processStreamForChat(
+      chatId,
+      chatState,
+      html,
+      fullText,
+      false, // delta is never final
+      api,
+      editIntervalMs,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Handle message.part.updated — full part snapshot (may be final)
+// ---------------------------------------------------------------------------
+
+export function handlePartUpdated(
+  event: PartUpdatedEvent,
+  ctx: HookContext,
+): void {
+  const { part } = event.properties;
+
+  // Only handle text parts
+  if (part.type !== "text") return;
+
+  const rawText = part.text ?? "";
   if (!rawText.trim()) return;
 
-  const isFinal =
-    textParts.some((p) => p.state === "complete") &&
-    textParts.every((p) => !p.state || p.state === "complete");
+  const { sessionID, id: partID } = part;
+  const { api, editIntervalMs } = ctx;
 
+  // Update the accumulator with the full text (replaces any delta-built text)
+  partTextAccumulator.set(partID, rawText);
+
+  const isFinal = part.state === "complete";
   const html = markdownToTelegramHtml(rawText);
 
   for (const chatId of getAllChatIds()) {
@@ -76,7 +155,16 @@ export function handleMessageUpdated(
       editIntervalMs,
     );
   }
+
+  // Clean up accumulator when part is complete
+  if (isFinal) {
+    clearAccumulated(partID);
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Core streaming logic (unchanged state machine, but called from new handlers)
+// ---------------------------------------------------------------------------
 
 /** Edit a Telegram message with HTML, falling back to plain text on parse errors. */
 async function editWithFallback(

@@ -11,7 +11,13 @@ import {
   getConfigPath,
 } from "./config.js";
 
-import { handleMessageUpdated, type HookContext } from "./hooks/message.js";
+import {
+  handlePartUpdated,
+  handlePartDelta,
+  type HookContext,
+  type PartUpdatedEvent,
+  type PartDeltaEvent,
+} from "./hooks/message.js";
 import {
   handleSessionCreated,
   handleSessionIdle,
@@ -300,39 +306,22 @@ export const TelegramPlugin: Plugin = async (ctx) => {
 
     // ── Event dispatcher ──────────────────────────────────────────────
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
-      // DIAG: Send first few message events with full JSON shape
-      const DIAG_CHAT = 92723787;
-      if (event.type === "message.updated" || event.type === "message.part.updated" || event.type === "message.part.delta") {
-        // Only send first 2 of each type to avoid spam
-        const diagKey = "_diag_" + event.type;
-        const diagMap = (globalThis as any).__diagCounts ??= {};
-        diagMap[diagKey] = (diagMap[diagKey] ?? 0) + 1;
-        if (diagMap[diagKey] <= 2) {
-          try {
-            const json = JSON.stringify(event.properties, null, 2);
-            const truncated = json.length > 3800 ? json.slice(0, 3800) + "\n..." : json;
-            void bot.api.sendMessage(DIAG_CHAT, "[DIAG] " + event.type + "\n```json\n" + truncated + "\n```", { parse_mode: "Markdown" }).catch(() => {});
-          } catch { /* ignore */ }
-        }
-      }
-
       if (!event.properties || typeof event.properties !== "object") return;
-      const props = event.properties as Record<string, unknown>;
 
       switch (event.type) {
-        case "message.updated":
-        case "message.part.updated": {
-          if (!Array.isArray(props.parts)) {
-            const detail = "keys=" + Object.keys(props).join(",") + " parts_type=" + typeof props.parts;
-            void bot.api.sendMessage(DIAG_CHAT, "[DIAG] SKIP " + event.type + " " + detail).catch(() => {});
-            break;
-          }
-          handleMessageUpdated(
-            event as Parameters<typeof handleMessageUpdated>[0],
-            hookCtx,
-          );
+        // ── Streaming: delta events carry incremental text chunks ──────
+        case "message.part.delta":
+          handlePartDelta(event as PartDeltaEvent, hookCtx);
           break;
-        }
+
+        // ── Part updated: full snapshot of a single part ──────────────
+        case "message.part.updated":
+          handlePartUpdated(event as PartUpdatedEvent, hookCtx);
+          break;
+
+        // ── message.updated: metadata only (role, cost, tokens) — skip
+        case "message.updated":
+          break;
 
         case "session.created":
           handleSessionCreated(
