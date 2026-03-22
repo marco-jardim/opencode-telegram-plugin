@@ -36,7 +36,6 @@ interface OpenCodeClient {
           name: string;
           models: Record<string, { id: string; name: string }>;
         }>;
-        default: Record<string, string>;
       };
     }>;
   };
@@ -401,7 +400,6 @@ export async function modelCommand(ctx: Context): Promise<void> {
   try {
     const { data } = await getClient().config.providers();
     const providers = data?.providers ?? [];
-    const defaults = data?.default ?? {};
 
     if (providers.length === 0) {
       await safeSend(() => ctx.reply("No models configured."));
@@ -414,42 +412,37 @@ export async function modelCommand(ctx: Context): Promise<void> {
       ? `Current: <b>${escapeHtml(state.selectedModel.displayName)}</b> (<code>${escapeHtml(state.selectedModel.providerID)}/${escapeHtml(state.selectedModel.modelID)}</code>)`
       : "Current: <i>default</i>";
 
-    // Build defaults block (favorites)
-    const defaultLines: string[] = [];
-    for (const [providerId, modelId] of Object.entries(defaults)) {
-      const provider = providers.find((p) => p.id === providerId);
-      const providerName = provider?.name || providerId;
-      const model = provider?.models?.[modelId];
-      const modelName = model?.name ?? modelId;
-      defaultLines.push(
-        `  ⭐ <code>${escapeHtml(providerId)}/${escapeHtml(modelId)}</code> — ${escapeHtml(modelName)} (${escapeHtml(providerName)})`,
-      );
-    }
+    // Sort providers alphabetically by display name
+    const sorted = [...providers].sort((a, b) =>
+      (a.name || a.id).localeCompare(b.name || b.id),
+    );
 
-    // Build per-provider blocks (all models)
+    // Build per-provider blocks with models sorted alphabetically by name
     const blocks: string[] = [];
-    for (const provider of providers) {
+    for (const provider of sorted) {
       const modelEntries = Object.entries(provider.models ?? {});
       if (modelEntries.length === 0) continue;
 
-      const defaultModelId = defaults[provider.id];
-      const modelLines = modelEntries.map(([id, model]) => {
-        const star = id === defaultModelId ? " ⭐" : "";
-        return `  • <code>${escapeHtml(id)}</code> — ${escapeHtml(model.name ?? id)}${star}`;
-      });
+      const modelLines = modelEntries
+        .sort(([, a], [, b]) => (a.name ?? "").localeCompare(b.name ?? ""))
+        .map(
+          ([id, model]) =>
+            `  • <code>${escapeHtml(id)}</code> — ${escapeHtml(model.name ?? id)}`,
+        );
+
       blocks.push(
         `<b>${escapeHtml(provider.name || provider.id)}</b>\n${modelLines.join("\n")}`,
       );
     }
 
+    if (blocks.length === 0) {
+      await safeSend(() => ctx.reply("No models available."));
+      return;
+    }
+
     // Assemble output
     const MAX_LEN = 4000;
     let header = `<b>Available Models:</b>\n${currentLine}\n`;
-
-    if (defaultLines.length > 0) {
-      header += `\n<b>Favorites:</b>\n${defaultLines.join("\n")}\n`;
-    }
-
     header += `\nUse <code>/model provider/model-id</code> to set.\n`;
 
     let current = header;
