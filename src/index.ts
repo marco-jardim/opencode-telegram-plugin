@@ -2,6 +2,14 @@ import type { Plugin } from "@opencode-ai/plugin";
 
 import { createBot, injectClient } from "./bot.js";
 import { initMapping } from "./state/mapping.js";
+import {
+  resolveConfig,
+  readConfigFile,
+  writeConfigFile,
+  deleteConfigKey,
+  getConfigStatus,
+  getConfigPath,
+} from "./config.js";
 
 import { handleMessageUpdated, type HookContext } from "./hooks/message.js";
 import {
@@ -14,46 +22,179 @@ import { handlePermissionAsked } from "./hooks/permission.js";
 import { handleToolBefore, handleToolAfter } from "./hooks/tool.js";
 
 // ---------------------------------------------------------------------------
+// /telegram slash command handler
+// ---------------------------------------------------------------------------
+
+function handleTelegramCommand(args: string | undefined): string {
+  const subcommand = (args ?? "").trim().toLowerCase();
+  const parts = subcommand.split(/\s+/);
+  const cmd = parts[0] || "help";
+  const rest = parts.slice(1).join(" ").trim();
+
+  switch (cmd) {
+    case "set-token": {
+      if (!rest) {
+        return "**Usage**: `/telegram set-token <BOT_TOKEN>`\n\nGet a token from @BotFather on Telegram.";
+      }
+      // Basic validation: Telegram tokens are roughly <digits>:<alphanumeric+_->
+      if (!/^\d+:[A-Za-z0-9_-]+$/.test(rest)) {
+        return "**Invalid token format.** Expected format: `123456789:ABCdef-GHIjkl_MNOpqr`\n\nGet a token from @BotFather on Telegram.";
+      }
+      writeConfigFile({ botToken: rest });
+      const masked = rest.slice(0, 6) + "..." + rest.slice(-4);
+      return `**Bot token saved** to config file.\n\n- Token: \`${masked}\`\n- File: \`${getConfigPath()}\`\n\n**Restart OpenCode** for the change to take effect.`;
+    }
+
+    case "remove-token": {
+      deleteConfigKey("botToken");
+      return "**Bot token removed** from config file.\n\n**Restart OpenCode** for the change to take effect.";
+    }
+
+    case "set-users": {
+      if (!rest) {
+        return "**Usage**: `/telegram set-users <user_id1,user_id2,...>`\n\nSet comma-separated Telegram user IDs that are allowed to use the bot.\nUse `/telegram remove-users` to allow all users.";
+      }
+      // Validate: all parts should be numeric
+      const ids = rest.split(",").map(s => s.trim()).filter(Boolean);
+      const invalid = ids.filter(id => !/^\d+$/.test(id));
+      if (invalid.length > 0) {
+        return `**Invalid user ID(s)**: ${invalid.map(id => `\`${id}\``).join(", ")}\n\nUser IDs must be numeric. Send a message to @userinfobot on Telegram to get your ID.`;
+      }
+      writeConfigFile({ allowedUsers: ids.join(",") });
+      return `**Allowed users saved**: ${ids.map(id => `\`${id}\``).join(", ")}\n\n**Restart OpenCode** for the change to take effect.`;
+    }
+
+    case "remove-users": {
+      deleteConfigKey("allowedUsers");
+      return "**User restriction removed.** All users will be allowed.\n\n**Restart OpenCode** for the change to take effect.";
+    }
+
+    case "set-interval": {
+      const ms = Number(rest);
+      if (!rest || !Number.isFinite(ms) || ms <= 0) {
+        return "**Usage**: `/telegram set-interval <milliseconds>`\n\nSet the minimum interval between message edits during streaming.\nDefault: `2500` (2.5 seconds).";
+      }
+      writeConfigFile({ editIntervalMs: ms });
+      return `**Edit interval saved**: \`${ms}ms\`\n\n**Restart OpenCode** for the change to take effect.`;
+    }
+
+    case "auto-attach": {
+      if (rest === "on" || rest === "true") {
+        writeConfigFile({ autoAttach: true });
+        return "**Auto-attach enabled.** Bot will auto-attach to the active session on `/start`.\n\n**Restart OpenCode** for the change to take effect.";
+      } else if (rest === "off" || rest === "false") {
+        writeConfigFile({ autoAttach: false });
+        return "**Auto-attach disabled.** Use `/attach` manually.\n\n**Restart OpenCode** for the change to take effect.";
+      }
+      return "**Usage**: `/telegram auto-attach <on|off>`";
+    }
+
+    case "status": {
+      return getConfigStatus();
+    }
+
+    case "path": {
+      return `**Config file path**: \`${getConfigPath()}\``;
+    }
+
+    case "show": {
+      const file = readConfigFile();
+      if (Object.keys(file).length === 0) {
+        return `**Config file is empty or doesn't exist.**\n\nPath: \`${getConfigPath()}\`\nUse \`/telegram set-token <TOKEN>\` to get started.`;
+      }
+      // Mask the token for display
+      const display: Record<string, unknown> = { ...file };
+      if (typeof display.botToken === "string") {
+        const t = display.botToken as string;
+        display.botToken = t.slice(0, 6) + "..." + t.slice(-4);
+      }
+      return `**Config file contents** (\`${getConfigPath()}\`):\n\n\`\`\`json\n${JSON.stringify(display, null, 2)}\n\`\`\``;
+    }
+
+    case "help":
+    default: {
+      return [
+        "**Telegram Plugin Configuration**\n",
+        "**Commands**:",
+        "- `/telegram set-token <TOKEN>` — Save bot token (from @BotFather)",
+        "- `/telegram remove-token` — Remove saved bot token",
+        "- `/telegram set-users <id1,id2>` — Restrict bot to specific user IDs",
+        "- `/telegram remove-users` — Allow all users",
+        "- `/telegram set-interval <ms>` — Set edit throttle interval (default: 2500)",
+        "- `/telegram auto-attach <on|off>` — Toggle auto-attach on /start",
+        "- `/telegram status` — Show resolved config (file + env)",
+        "- `/telegram show` — Show raw config file contents",
+        "- `/telegram path` — Show config file location",
+        "- `/telegram help` — Show this help\n",
+        "**Config file**: `~/.config/opencode/telegram.json`",
+        "**Priority**: env vars override config file values.\n",
+        "**Quick start**:",
+        "1. `/telegram set-token 123456:ABC-DEF...`",
+        "2. `/telegram set-users <your_telegram_id>`",
+        "3. Restart OpenCode",
+      ].join("\n");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
 export const TelegramPlugin: Plugin = async (ctx) => {
   const { client, directory } = ctx;
 
-  // ── Configuration from environment ────────────────────────────────────
-  const token = process.env["TELEGRAM_BOT_TOKEN"];
-  if (!token) {
+  // ── Resolve configuration (config file + env vars) ─────────────────────
+  const config = resolveConfig();
+
+  if (!config.botToken) {
     await client.app.log({
       body: {
         service: "telegram-plugin",
         level: "warn",
         message:
-          "TELEGRAM_BOT_TOKEN not set — Telegram plugin disabled.",
+          "No bot token found (env or config file) — Telegram bot disabled. Use /telegram set-token to configure.",
       },
     });
-    return {};
-  }
 
-  const allowedUsers = process.env["TELEGRAM_ALLOWED_USERS"] ?? "";
-  const rawInterval = Number(process.env["TELEGRAM_EDIT_INTERVAL_MS"]);
-  const editIntervalMs = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 2500;
+    // Even without a token, register the /telegram command so users can configure
+    return {
+      config: async (opencodeConfig: any) => {
+        opencodeConfig.command ??= {};
+        opencodeConfig.command["telegram"] = {
+          template: "$ARGUMENTS",
+          description: "Configure the Telegram plugin (set-token, set-users, status, help)",
+        };
+      },
+      "command.execute.before": async (input: any, output: any) => {
+        if (input.command === "telegram") {
+          output.parts.push({
+            type: "text" as const,
+            text: handleTelegramCommand(input.arguments),
+          });
+        }
+      },
+    };
+  }
 
   // ── Persistent mapping store ──────────────────────────────────────────
   const dataDir = `${directory}/.opencode/telegram`;
   initMapping(dataDir);
 
   // ── Create bot ────────────────────────────────────────────────────────
-  const bot = createBot({ token, allowedUsers });
+  const bot = createBot({
+    token: config.botToken,
+    allowedUsers: config.allowedUsers,
+  });
   injectClient(client);
 
   // ── Hook context (shared by all event-driven hooks) ───────────────────
   const hookCtx: HookContext = {
     api: bot.api,
-    editIntervalMs,
+    editIntervalMs: config.editIntervalMs,
   };
 
   // ── Start polling ─────────────────────────────────────────────────────
-  // Start in the background — don't await (it blocks until stopped).
   void bot.start({
     drop_pending_updates: true,
     onStart: () => {
@@ -61,7 +202,7 @@ export const TelegramPlugin: Plugin = async (ctx) => {
         body: {
           service: "telegram-plugin",
           level: "info",
-          message: "Telegram bot started (long polling).",
+          message: `Telegram bot started (token from ${config.tokenSource}).`,
         },
       });
     },
@@ -76,24 +217,40 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   function shutdown(): void {
     if (stopping) return;
     stopping = true;
-    // Remove listener to prevent leaks on hot-reload
     process.off("SIGINT", shutdown);
     bot.stop().catch(() => undefined);
   }
 
   process.on("SIGINT", shutdown);
 
-  // ── Event dispatcher ──────────────────────────────────────────────────
+  // ── Return hooks ──────────────────────────────────────────────────────
   return {
+    // ── /telegram slash command ────────────────────────────────────────
+    config: async (opencodeConfig: any) => {
+      opencodeConfig.command ??= {};
+      opencodeConfig.command["telegram"] = {
+        template: "$ARGUMENTS",
+        description: "Configure the Telegram plugin (set-token, set-users, status, help)",
+      };
+    },
+
+    "command.execute.before": async (input: any, output: any) => {
+      if (input.command === "telegram") {
+        output.parts.push({
+          type: "text" as const,
+          text: handleTelegramCommand(input.arguments),
+        });
+      }
+    },
+
+    // ── Event dispatcher ──────────────────────────────────────────────
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
       if (!event.properties || typeof event.properties !== "object") return;
       const props = event.properties as Record<string, unknown>;
 
       switch (event.type) {
-        // ── Message streaming ──────────────────────────────────────────
         case "message.updated":
         case "message.part.updated": {
-          // Guard: ensure parts is an array before passing to handler
           if (!Array.isArray(props.parts)) break;
           handleMessageUpdated(
             event as Parameters<typeof handleMessageUpdated>[0],
@@ -102,7 +259,6 @@ export const TelegramPlugin: Plugin = async (ctx) => {
           break;
         }
 
-        // ── Session lifecycle ──────────────────────────────────────────
         case "session.created":
           handleSessionCreated(
             event as Parameters<typeof handleSessionCreated>[0],
@@ -131,7 +287,6 @@ export const TelegramPlugin: Plugin = async (ctx) => {
           );
           break;
 
-        // ── Permissions ────────────────────────────────────────────────
         case "permission.asked":
           handlePermissionAsked(
             event as Parameters<typeof handlePermissionAsked>[0],
@@ -139,7 +294,6 @@ export const TelegramPlugin: Plugin = async (ctx) => {
           );
           break;
 
-        // ── Tool execution ─────────────────────────────────────────────
         case "tool.execute.before":
           handleToolBefore(
             event as Parameters<typeof handleToolBefore>[0],
@@ -155,7 +309,6 @@ export const TelegramPlugin: Plugin = async (ctx) => {
           break;
 
         default:
-          // Unhandled event — ignore silently
           break;
       }
     },
