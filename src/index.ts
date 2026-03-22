@@ -300,15 +300,13 @@ export const TelegramPlugin: Plugin = async (ctx) => {
 
     // ── Event dispatcher ──────────────────────────────────────────────
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
-      // DEBUG: Log all events to structured logging
+      // DIAG: Send message events info to Telegram for debugging
+      const DIAG_CHAT = 92723787;
       if (event.type.startsWith("message.")) {
-        void client.app.log({
-          body: {
-            service: "telegram-plugin",
-            level: "debug",
-            message: "EVENT " + event.type + " keys=" + (event.properties && typeof event.properties === "object" ? Object.keys(event.properties as Record<string, unknown>).join(",") : "none"),
-          },
-        });
+        const info = event.properties && typeof event.properties === "object"
+          ? "keys=" + Object.keys(event.properties as Record<string, unknown>).join(",")
+          : "no-props";
+        void bot.api.sendMessage(DIAG_CHAT, "[DIAG] " + event.type + " " + info).catch(() => {});
       }
 
       if (!event.properties || typeof event.properties !== "object") return;
@@ -318,13 +316,8 @@ export const TelegramPlugin: Plugin = async (ctx) => {
         case "message.updated":
         case "message.part.updated": {
           if (!Array.isArray(props.parts)) {
-            void client.app.log({
-              body: {
-                service: "telegram-plugin",
-                level: "debug",
-                message: "EVENT " + event.type + " SKIPPED: parts not array. props keys=" + Object.keys(props).join(",") + " parts type=" + typeof props.parts,
-              },
-            });
+            const detail = "keys=" + Object.keys(props).join(",") + " parts_type=" + typeof props.parts;
+            void bot.api.sendMessage(DIAG_CHAT, "[DIAG] SKIP " + event.type + " " + detail).catch(() => {});
             break;
           }
           handleMessageUpdated(
