@@ -79,6 +79,10 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   const text = ctx.message?.text;
   if (!text) return;
 
+  // Ignore messages that look like unrecognized commands (e.g. /models, /foo)
+  // — these should not be forwarded as prompts to OpenCode
+  if (text.startsWith("/")) return;
+
   // ------------------------------------------------------------------
   // 1. Resolve active session
   // ------------------------------------------------------------------
