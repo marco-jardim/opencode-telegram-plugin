@@ -327,16 +327,7 @@ export async function switchCommand(ctx: Context): Promise<void> {
 
 export async function modelCommand(ctx: Context): Promise<void> {
   try {
-    const result = await getClient().config.providers();
-    const { data } = result;
-
-    // Diagnostic: dump raw shape
-    await safeSend(() =>
-      ctx.reply(
-        `[DIAG] result keys: ${Object.keys(result ?? {}).join(", ")}\ndata keys: ${Object.keys(data ?? {}).join(", ")}\ndata?.providers type: ${typeof (data as any)?.providers}\ndata?.providers length: ${Array.isArray((data as any)?.providers) ? (data as any).providers.length : "N/A"}\nJSON preview: ${JSON.stringify(data, null, 0)?.substring(0, 500)}`,
-      ),
-    );
-
+    const { data } = await getClient().config.providers();
     const providers = data?.providers ?? [];
 
     if (providers.length === 0) {
@@ -344,28 +335,43 @@ export async function modelCommand(ctx: Context): Promise<void> {
       return;
     }
 
-    const lines: string[] = [];
+    // Build per-provider blocks, then send in chunks to stay under 4096 chars
+    const blocks: string[] = [];
     for (const provider of providers) {
-      lines.push(`<b>${escapeHtml(provider.name || provider.id)}</b>`);
+      const modelEntries = Object.entries(provider.models ?? {});
+      if (modelEntries.length === 0) continue;
 
-      const modelIds = Object.keys(provider.models ?? {});
-      if (modelIds.length === 0) {
-        lines.push("  <i>No models listed</i>");
-      } else {
-        for (const modelId of modelIds) {
-          const model = provider.models[modelId]!;
-          lines.push(
-            `  • <code>${escapeHtml(modelId)}</code> — ${escapeHtml(model.name)}`,
-          );
-        }
-      }
+      const modelLines = modelEntries.map(
+        ([id, model]) =>
+          `  • <code>${escapeHtml(id)}</code> — ${escapeHtml(model.name ?? id)}`,
+      );
+      blocks.push(
+        `<b>${escapeHtml(provider.name || provider.id)}</b>\n${modelLines.join("\n")}`,
+      );
     }
 
-    await safeSend(() =>
-      ctx.reply(`<b>Available Models:</b>\n\n${lines.join("\n")}`, {
-        parse_mode: "HTML",
-      }),
-    );
+    if (blocks.length === 0) {
+      await safeSend(() => ctx.reply("No models available."));
+      return;
+    }
+
+    // Send in batches that fit under Telegram's 4096 char limit
+    const MAX_LEN = 4000;
+    let current = "<b>Available Models:</b>\n";
+    for (const block of blocks) {
+      if (current.length + block.length + 2 > MAX_LEN) {
+        await safeSend(() =>
+          ctx.reply(current, { parse_mode: "HTML" }),
+        );
+        current = "";
+      }
+      current += "\n" + block + "\n";
+    }
+    if (current.trim()) {
+      await safeSend(() =>
+        ctx.reply(current, { parse_mode: "HTML" }),
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
