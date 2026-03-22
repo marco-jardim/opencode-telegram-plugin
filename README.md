@@ -147,7 +147,11 @@ Once the bot is running, these commands are available in Telegram:
 | `/new` | Create an independent session |
 | `/sessions` | List all sessions |
 | `/switch` | Switch to a different session |
-| `/model` | Select a model (shows picker) |
+| `/model` | List available models with favorites marked |
+| `/model <provider/model-id>` | Set a specific model for this chat |
+| `/model reset` | Reset to the default model |
+| `/effort` | Show current effort level |
+| `/effort <low\|medium\|high>` | Set reasoning effort level |
 | `/status` | Show current connection status |
 | `/abort` | Abort the current session |
 | `/help` | Show help |

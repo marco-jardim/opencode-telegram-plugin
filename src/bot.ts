@@ -40,6 +40,8 @@ export interface CreateBotOptions {
   token: string;
   /** Comma-separated list of allowed Telegram user IDs (empty = allow all). */
   allowedUsers: string;
+  /** Optional error logger; defaults to console.error if not provided. */
+  onError?: (message: string, error: unknown) => void;
 }
 
 /**
@@ -49,7 +51,8 @@ export interface CreateBotOptions {
  * `AbortSignal` so the lifecycle is controlled by the plugin entry point.
  */
 export function createBot(opts: CreateBotOptions): Bot {
-  const { token, allowedUsers } = opts;
+  const { token, allowedUsers, onError } = opts;
+  const logError = onError ?? ((msg, err) => console.error(msg, err));
   const bot = new Bot(token);
 
   // ── Auto-retry plugin (handles 429 / 500 transparently) ─────────────────
@@ -57,7 +60,7 @@ export function createBot(opts: CreateBotOptions): Bot {
 
   // ── Global error handler — prevents unhandled errors from killing the bot
   bot.catch((err) => {
-    console.error("[telegram-plugin] Unhandled error in middleware:", err.error);
+    logError("[telegram-plugin] Unhandled error in middleware:", err.error);
   });
 
   // ── Middleware: private-chat only ───────────────────────────────────────

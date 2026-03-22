@@ -36,6 +36,7 @@ interface OpenCodeClient {
           name: string;
           models: Record<string, { id: string; name: string }>;
         }>;
+        default: Record<string, string>;
       };
     }>;
   };
@@ -356,7 +357,7 @@ export async function modelCommand(ctx: Context): Promise<void> {
       return;
     }
 
-    // Validate against available providers/models
+    // Validate provider exists, but allow any model ID (favorites may not be in models list)
     try {
       const { data } = await getClient().config.providers();
       const providers = data?.providers ?? [];
@@ -370,23 +371,14 @@ export async function modelCommand(ctx: Context): Promise<void> {
         return;
       }
 
+      // Try to resolve display name from models list, fall back to raw ID
       const model = (provider.models ?? {})[modelID];
-      if (!model) {
-        const available = Object.keys(provider.models ?? {}).slice(0, 10).join("\n  • ");
-        await safeSend(() =>
-          ctx.reply(
-            `❌ Unknown model: <code>${escapeHtml(modelID)}</code>\n\n` +
-              `Available models for <b>${escapeHtml(provider.name || provider.id)}</b>:\n  • ${available}`,
-            { parse_mode: "HTML" },
-          ),
-        );
-        return;
-      }
+      const displayName = model?.name ?? modelID;
 
       const selected: SelectedModel = {
         providerID,
         modelID,
-        displayName: model.name ?? modelID,
+        displayName,
       };
       getChatState(chatId).selectedModel = selected;
 
@@ -407,51 +399,60 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
   // /model (no args) — list available models
   try {
-    const result = await getClient().config.providers();
-    const { data } = result;
-
-    // Diagnostic: show the "default" field
-    const defaultField = (data as any)?.default;
-    if (defaultField) {
-      await safeSend(() =>
-        ctx.reply(`[DIAG] default: ${JSON.stringify(defaultField, null, 2)?.substring(0, 1000)}`, { parse_mode: undefined }),
-      );
-    }
-
+    const { data } = await getClient().config.providers();
     const providers = data?.providers ?? [];
+    const defaults = data?.default ?? {};
 
     if (providers.length === 0) {
       await safeSend(() => ctx.reply("No models configured."));
       return;
     }
 
+    // Show current selection
+    const state = getChatState(chatId);
+    const currentLine = state.selectedModel
+      ? `Current: <b>${escapeHtml(state.selectedModel.displayName)}</b> (<code>${escapeHtml(state.selectedModel.providerID)}/${escapeHtml(state.selectedModel.modelID)}</code>)`
+      : "Current: <i>default</i>";
+
+    // Build defaults block (favorites)
+    const defaultLines: string[] = [];
+    for (const [providerId, modelId] of Object.entries(defaults)) {
+      const provider = providers.find((p) => p.id === providerId);
+      const providerName = provider?.name || providerId;
+      const model = provider?.models?.[modelId];
+      const modelName = model?.name ?? modelId;
+      defaultLines.push(
+        `  ⭐ <code>${escapeHtml(providerId)}/${escapeHtml(modelId)}</code> — ${escapeHtml(modelName)} (${escapeHtml(providerName)})`,
+      );
+    }
+
+    // Build per-provider blocks (all models)
     const blocks: string[] = [];
     for (const provider of providers) {
       const modelEntries = Object.entries(provider.models ?? {});
       if (modelEntries.length === 0) continue;
 
-      const modelLines = modelEntries.map(
-        ([id, model]) =>
-          `  • <code>${escapeHtml(id)}</code> — ${escapeHtml(model.name ?? id)}`,
-      );
+      const defaultModelId = defaults[provider.id];
+      const modelLines = modelEntries.map(([id, model]) => {
+        const star = id === defaultModelId ? " ⭐" : "";
+        return `  • <code>${escapeHtml(id)}</code> — ${escapeHtml(model.name ?? id)}${star}`;
+      });
       blocks.push(
         `<b>${escapeHtml(provider.name || provider.id)}</b>\n${modelLines.join("\n")}`,
       );
     }
 
-    if (blocks.length === 0) {
-      await safeSend(() => ctx.reply("No models available."));
-      return;
+    // Assemble output
+    const MAX_LEN = 4000;
+    let header = `<b>Available Models:</b>\n${currentLine}\n`;
+
+    if (defaultLines.length > 0) {
+      header += `\n<b>Favorites:</b>\n${defaultLines.join("\n")}\n`;
     }
 
-    // Show current selection
-    const state = getChatState(chatId);
-    const currentLine = state.selectedModel
-      ? `\nCurrent: <b>${escapeHtml(state.selectedModel.displayName)}</b> (<code>${escapeHtml(state.selectedModel.providerID)}/${escapeHtml(state.selectedModel.modelID)}</code>)\n`
-      : "\nCurrent: <i>default</i>\n";
+    header += `\nUse <code>/model provider/model-id</code> to set.\n`;
 
-    const MAX_LEN = 4000;
-    let current = `<b>Available Models:</b>${currentLine}\nUse <code>/model provider/model-id</code> to set.\n`;
+    let current = header;
     for (const block of blocks) {
       if (current.length + block.length + 2 > MAX_LEN) {
         await safeSend(() =>

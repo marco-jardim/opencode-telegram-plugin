@@ -228,6 +228,16 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     bot = createBot({
       token: config.botToken,
       allowedUsers: config.allowedUsers,
+      onError: (message, error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        void client.app.log({
+          body: {
+            service: "telegram-plugin",
+            level: "error",
+            message: message + " " + detail,
+          },
+        });
+      },
     });
     injectClient(client);
   } catch (err) {
