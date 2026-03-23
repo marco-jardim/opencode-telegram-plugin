@@ -204,6 +204,9 @@ export function handleToolPartUpdated(
         // Send "running" notification only once per tool invocation
         if (prev?.status === "running" || prev?.status === "completed") break;
 
+        // Mark as running SYNCHRONOUSLY to prevent duplicates from rapid events
+        sentToolMessages.set(key, { status: "running" });
+
         const title = part.state.title || part.tool;
         const filePath = extractFilePath(part.state.input);
         const command = isBashTool(part.tool) ? extractCommand(part.state.input) : null;
@@ -213,7 +216,7 @@ export function handleToolPartUpdated(
           msgText += `\n📄 <code>${escapeHtml(filePath)}</code>`;
         }
         if (command) {
-          const cmdPreview = command.length > 200 ? command.slice(0, 200) + "…" : command;
+          const cmdPreview = command.length > 500 ? command.slice(0, 500) + "…" : command;
           msgText += `\n<pre>$ ${escapeHtml(cmdPreview)}</pre>`;
         }
 
@@ -221,6 +224,7 @@ export function handleToolPartUpdated(
           const result = await safeSend(() =>
             api.sendMessage(chatId, msgText, { parse_mode: "HTML" }),
           );
+          // Update with messageId for later in-place editing
           sentToolMessages.set(key, {
             status: "running",
             messageId: result.ok ? result.messageId : undefined,
@@ -232,6 +236,9 @@ export function handleToolPartUpdated(
       case "completed": {
         // Skip if we already showed completed for this tool
         if (prev?.status === "completed") break;
+
+        // Mark as completed SYNCHRONOUSLY to prevent duplicates
+        sentToolMessages.set(key, { status: "completed", messageId: prev?.messageId });
 
         const title = part.state.title || part.tool;
         const filePath = extractFilePath(part.state.input);
@@ -252,7 +259,7 @@ export function handleToolPartUpdated(
         body += ` <i>(${durationStr})</i>`;
 
         if (isBash && command) {
-          const cmdPreview = command.length > 100 ? command.slice(0, 100) + "…" : command;
+          const cmdPreview = command.length > 500 ? command.slice(0, 500) + "…" : command;
           body += `\n<pre>$ ${escapeHtml(cmdPreview)}</pre>`;
         }
 
@@ -297,6 +304,9 @@ export function handleToolPartUpdated(
 
       case "error": {
         if (prev?.status === "completed" || prev?.status === "error") break;
+
+        // Mark as error SYNCHRONOUSLY
+        sentToolMessages.set(key, { status: "error", messageId: prev?.messageId });
 
         const errorMsg = part.state.error || "Unknown error";
 
