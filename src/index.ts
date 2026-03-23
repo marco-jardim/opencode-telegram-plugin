@@ -153,6 +153,10 @@ function handleTelegramCommand(args: string | undefined): string {
 export const TelegramPlugin: Plugin = async (ctx) => {
   const { client, directory, serverUrl } = ctx;
 
+  // DEBUG: log what serverUrl actually is
+  console.error(`[TELEGRAM-DEBUG] serverUrl=${serverUrl}, type=${typeof serverUrl}, toString=${serverUrl?.toString()}, directory=${directory}`);
+  console.error(`[TELEGRAM-DEBUG] ctx keys=${Object.keys(ctx).join(",")}`);
+
   // ── Create v2 SDK client (flat params, agent optional on shell) ─────────
   const v2 = createOpencodeClient({
     baseUrl: serverUrl.toString(),
