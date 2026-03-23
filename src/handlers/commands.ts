@@ -670,7 +670,7 @@ export async function executeShell(ctx: Context, chatId: number, command: string
   try {
     const result = await getClient().session.shell({
       path: { id: sessionId },
-      body: { command },
+      body: { agent: "default", command },
     });
 
     // Debug: show what the API returned
