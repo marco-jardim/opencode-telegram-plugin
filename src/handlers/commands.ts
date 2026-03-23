@@ -643,8 +643,12 @@ export async function shellCommand(ctx: Context): Promise<void> {
 }
 
 /**
- * Execute a shell command in the current session and send the result.
+ * Execute a shell command in the current session.
  * Shared between /shell and !<cmd>.
+ *
+ * session.shell() works like session.prompt() — it fires the command and the
+ * output streams back through event hooks (message.part.delta / updated).
+ * We just send a confirmation header and let the streaming handle the rest.
  */
 export async function executeShell(ctx: Context, chatId: number, command: string): Promise<void> {
   const sessionId = getActiveSessionId(chatId);
@@ -659,49 +663,20 @@ export async function executeShell(ctx: Context, chatId: number, command: string
     await ctx.api.sendChatAction(chatId, "typing");
   } catch { /* non-fatal */ }
 
+  await safeSend(() =>
+    ctx.reply(`<code>$ ${escapeHtml(command)}</code>`, { parse_mode: "HTML" }),
+  );
+
   try {
-    const { data } = await getClient().session.shell({
+    void getClient().session.shell({
       path: { id: sessionId },
       body: { agent: "", command },
+    }).catch(async (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      await safeSend(() =>
+        ctx.reply(`❌ Shell error: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+      );
     });
-
-    const parts = data?.parts ?? [];
-    const textParts = parts
-      .filter((p) => p.type === "text" && p.text)
-      .map((p) => p.text!);
-
-    const output = textParts.join("\n").trim();
-
-    if (!output) {
-      await safeSend(() =>
-        ctx.reply(`<code>$ ${escapeHtml(command)}</code>\n<i>(no output)</i>`, { parse_mode: "HTML" }),
-      );
-      return;
-    }
-
-    // Chunk output if needed (4000 char limit for safety)
-    const header = `<code>$ ${escapeHtml(command)}</code>\n`;
-    const MAX_LEN = 4000 - header.length;
-
-    if (output.length <= MAX_LEN) {
-      await safeSend(() =>
-        ctx.reply(`${header}<pre>${escapeHtml(output)}</pre>`, { parse_mode: "HTML" }),
-      );
-    } else {
-      // Send header first, then chunks
-      await safeSend(() =>
-        ctx.reply(header, { parse_mode: "HTML" }),
-      );
-
-      let remaining = output;
-      while (remaining.length > 0) {
-        const chunk = remaining.slice(0, 4000);
-        remaining = remaining.slice(4000);
-        await safeSend(() =>
-          ctx.reply(`<pre>${escapeHtml(chunk)}</pre>`, { parse_mode: "HTML" }),
-        );
-      }
-    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(() =>
