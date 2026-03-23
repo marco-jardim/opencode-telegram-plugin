@@ -104,6 +104,8 @@ interface ChatStreamCtx {
   editing: boolean;
   /** True while the initial sendMessage is in-flight */
   sending: boolean;
+  /** The part ID currently being streamed — when a new part arrives, finalize and start fresh */
+  currentPartId: string | null;
 }
 
 const chatStreamCtx = new Map<number, ChatStreamCtx>();
@@ -133,7 +135,7 @@ export function handlePartDelta(
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-    updateChatStream(chatId, html, fullText, false, api, editIntervalMs);
+    updateChatStream(chatId, html, fullText, false, api, editIntervalMs, partID);
   }
 }
 
@@ -162,7 +164,7 @@ export function handlePartUpdated(
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-    updateChatStream(chatId, html, rawText, isFinal, api, editIntervalMs);
+    updateChatStream(chatId, html, rawText, isFinal, api, editIntervalMs, partID);
   }
 
   if (isFinal) {
@@ -181,8 +183,16 @@ function updateChatStream(
   isFinal: boolean,
   api: Api<RawApi>,
   editIntervalMs: number,
+  partId: string,
 ): void {
   let sctx = chatStreamCtx.get(chatId);
+
+  // ── New part detected: finalize the current message and start fresh ──
+  if (sctx && sctx.currentPartId !== null && sctx.currentPartId !== partId) {
+    // Finalize current stream (do last edit, stop timer, cleanup)
+    void finalizeThenStartNew(chatId, sctx, html, rawText, isFinal, api, editIntervalMs, partId);
+    return;
+  }
 
   if (!sctx) {
     // First text — send initial message
@@ -195,19 +205,89 @@ function updateChatStream(
       editIntervalMs,
       editing: false,
       sending: true,
+      currentPartId: partId,
     };
     chatStreamCtx.set(chatId, sctx);
     void sendInitialMessage(chatId, sctx);
     return;
   }
 
-  // Update latest text
+  // Update latest text (same part)
   sctx.latestRawText = rawText;
   sctx.latestHtml = html;
   if (isFinal) {
     sctx.isFinal = true;
     void doFinalEdit(chatId, sctx);
   }
+}
+
+/**
+ * Finalize the current stream for a chat (last edit + cleanup),
+ * then start a fresh stream for the new part.
+ */
+async function finalizeThenStartNew(
+  chatId: number,
+  oldSctx: ChatStreamCtx,
+  html: string,
+  rawText: string,
+  isFinal: boolean,
+  api: Api<RawApi>,
+  editIntervalMs: number,
+  partId: string,
+): Promise<void> {
+  // Mark old stream as final and do last edit
+  oldSctx.isFinal = true;
+
+  if (oldSctx.editTimer) {
+    clearInterval(oldSctx.editTimer);
+    oldSctx.editTimer = null;
+  }
+
+  // Wait for in-flight operations on old stream
+  let waitCount = 0;
+  while (oldSctx.editing || oldSctx.sending) {
+    if (!isActive(chatId, oldSctx) || ++waitCount > 100) break; // 5s max
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  // Do final edit on old message
+  if (isActive(chatId, oldSctx)) {
+    const chatState = getChatState(chatId);
+    if (
+      chatState.stream.messageId !== null &&
+      oldSctx.latestRawText !== chatState.stream.lastSentText
+    ) {
+      await doEdit(chatId, oldSctx);
+    }
+  }
+
+  // Clean up old stream state (but keep typing indicator alive)
+  if (oldSctx.editTimer) {
+    clearInterval(oldSctx.editTimer);
+  }
+  chatStreamCtx.delete(chatId);
+
+  // Reset stream tracker for the new message (preserve typing)
+  const chatState = getChatState(chatId);
+  chatState.stream.messageId = null;
+  chatState.stream.lastSentText = "";
+  chatState.stream.chunks = [];
+  chatState.stream.state = "IDLE";
+
+  // Start fresh stream for the new part
+  const newSctx: ChatStreamCtx = {
+    latestRawText: rawText,
+    latestHtml: html,
+    isFinal,
+    editTimer: null,
+    api,
+    editIntervalMs,
+    editing: false,
+    sending: true,
+    currentPartId: partId,
+  };
+  chatStreamCtx.set(chatId, newSctx);
+  void sendInitialMessage(chatId, newSctx);
 }
 
 // ---------------------------------------------------------------------------
