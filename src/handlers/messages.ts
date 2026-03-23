@@ -10,12 +10,6 @@ import { executeShell } from "./commands.js";
 // Client — v2 SDK (flat parameter style)
 // ---------------------------------------------------------------------------
 
-interface SessionSummary {
-  id: string;
-  title: string;
-  createdAt: string;
-}
-
 let _client: OpencodeClient | null = null;
 
 export function setClient(client: OpencodeClient): void {
@@ -37,11 +31,11 @@ function getClient(): OpencodeClient {
  */
 async function tryAutoAttach(chatId: number): Promise<string | null> {
   try {
-    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
-    if (sessions.length === 0) return null;
+    const { data: sessions } = await getClient().session.list();
+    if (!sessions || sessions.length === 0) return null;
 
     const latest = [...sessions].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      (a, b) => ((b as any).time?.created ?? 0) - ((a as any).time?.created ?? 0),
     )[0]!;
 
     attachSession(chatId, latest.id);

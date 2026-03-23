@@ -17,10 +17,13 @@ import { escapeHtml } from "../utils/format.js";
 // Client — v2 SDK (flat parameter style)
 // ---------------------------------------------------------------------------
 
-interface SessionSummary {
+// V2 Session has time: { created: number, updated: number }, not createdAt
+interface V2Session {
   id: string;
   title: string;
-  createdAt: string;
+  time: { created: number; updated: number };
+  share?: { url: string };
+  [key: string]: unknown;
 }
 
 interface FileDiff {
@@ -33,23 +36,12 @@ interface FileDiff {
 interface MessageInfo {
   id: string;
   role: string;
-  createdAt?: string;
 }
 
 interface MessagePart {
   type: string;
   text?: string;
   [key: string]: unknown;
-}
-
-interface SessionData {
-  id: string;
-  title?: string;
-  share?: { url: string };
-}
-
-interface AssistantMessage {
-  parts?: MessagePart[];
 }
 
 interface OpenCodeCommand {
@@ -114,16 +106,16 @@ Reply <code>YES</code>, <code>NO</code>, or <code>ALWAYS</code> to a permission 
 /**
  * Returns sessions sorted newest-first, capped at `limit`.
  */
-function sortedSessions(sessions: SessionSummary[], limit = 10): SessionSummary[] {
+function sortedSessions(sessions: V2Session[], limit = 10): V2Session[] {
   return [...sessions]
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .sort((a, b) => (b.time?.created ?? 0) - (a.time?.created ?? 0))
     .slice(0, limit);
 }
 
 /**
  * Builds an InlineKeyboard where each button attaches to a session.
  */
-function buildSessionKeyboard(sessions: SessionSummary[]): InlineKeyboard {
+function buildSessionKeyboard(sessions: V2Session[]): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   for (const session of sessions) {
     const label = `${session.title || "Untitled"} (${session.id.slice(0, 8)}…)`;
@@ -158,10 +150,10 @@ export async function startCommand(ctx: Context): Promise<void> {
   if (!autoAttach) return;
 
   try {
-    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
-    if (sessions.length === 0) return;
+    const { data: sessions } = await getClient().session.list();
+    if (!sessions || sessions.length === 0) return;
 
-    const latest = sortedSessions(sessions, 1)[0]!;
+    const latest = sortedSessions(sessions as V2Session[], 1)[0]!;
     attachSession(chatId, latest.id);
 
     await safeSend(() =>
@@ -199,16 +191,15 @@ export async function attachCommand(ctx: Context): Promise<void> {
 
   // No session ID provided — show a picker
   try {
-    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
-
-    if (sessions.length === 0) {
+    const { data: sessions } = await getClient().session.list();
+    if (!sessions || sessions.length === 0) {
       await safeSend(() =>
         ctx.reply("No sessions found. Use /new to create one."),
       );
       return;
     }
 
-    const recent = sortedSessions(sessions);
+    const recent = sortedSessions(sessions as V2Session[]);
     const keyboard = buildSessionKeyboard(recent);
     const note =
       sessions.length > 10
@@ -246,7 +237,8 @@ export async function newCommand(ctx: Context): Promise<void> {
     (typeof ctx.match === "string" ? ctx.match.trim() : "") || "Telegram Session";
 
   try {
-    const { data } = await getClient().session.create({ title }) as { data: { id: string } };
+    const { data } = await getClient().session.create({ title });
+    if (!data) throw new Error("No session returned");
     startIndependentSession(chatId, data.id);
 
     await safeSend(() =>
@@ -270,9 +262,8 @@ export async function sessionsCommand(ctx: Context): Promise<void> {
   if (!chatId) return;
 
   try {
-    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
-
-    if (sessions.length === 0) {
+    const { data: sessions } = await getClient().session.list();
+    if (!sessions || sessions.length === 0) {
       await safeSend(() =>
         ctx.reply("No sessions found. Use /new to create one."),
       );
@@ -280,7 +271,7 @@ export async function sessionsCommand(ctx: Context): Promise<void> {
     }
 
     const activeId = getActiveSessionId(chatId);
-    const recent = sortedSessions(sessions);
+    const recent = sortedSessions(sessions as V2Session[]);
 
     const lines = recent.map((s, i) => {
       const active = s.id === activeId ? " ✅" : "";
@@ -331,16 +322,15 @@ export async function switchCommand(ctx: Context): Promise<void> {
 
   // No ID provided — show a picker (same UX as /attach)
   try {
-    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
-
-    if (sessions.length === 0) {
+    const { data: sessions } = await getClient().session.list();
+    if (!sessions || sessions.length === 0) {
       await safeSend(() =>
         ctx.reply("No sessions found. Use /new to create one."),
       );
       return;
     }
 
-    const recent = sortedSessions(sessions);
+    const recent = sortedSessions(sessions as V2Session[]);
     const keyboard = buildSessionKeyboard(recent);
     const note =
       sessions.length > 10
@@ -390,12 +380,12 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
     // Validate provider exists, but allow any model ID (favorites may not be in models list)
     try {
-      const { data } = await getClient().config.providers() as { data: { providers: Array<{ id: string; name: string; models: Record<string, { id: string; name: string }> }> } };
-      const providers = data?.providers ?? [];
-      const provider = providers.find((p) => p.id === providerID);
+      const { data } = await getClient().config.providers();
+      const providers = (data as any)?.providers ?? [];
+      const provider = providers.find((p: any) => p.id === providerID);
 
       if (!provider) {
-        const available = providers.map((p) => p.id).join(", ");
+        const available = providers.map((p: any) => p.id).join(", ");
         await safeSend(() =>
           ctx.reply(`❌ Unknown provider: <code>${escapeHtml(providerID)}</code>\nAvailable: ${available}`, { parse_mode: "HTML" }),
         );
@@ -430,8 +420,8 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
   // /model (no args) — list available models
   try {
-    const { data } = await getClient().config.providers() as { data: { providers: Array<{ id: string; name: string; models: Record<string, { id: string; name: string }> }> } };
-    const providers = data?.providers ?? [];
+    const { data } = await getClient().config.providers();
+    const providers = (data as any)?.providers ?? [];
 
     if (providers.length === 0) {
       await safeSend(() => ctx.reply("No models configured."));
@@ -445,7 +435,7 @@ export async function modelCommand(ctx: Context): Promise<void> {
       : "Current: <i>default</i>";
 
     // Sort providers alphabetically by display name
-    const sorted = [...providers].sort((a, b) =>
+    const sorted = [...providers].sort((a: any, b: any) =>
       (a.name || a.id).localeCompare(b.name || b.id),
     );
 
@@ -672,12 +662,14 @@ export async function diffCommand(ctx: Context): Promise<void> {
   try {
     const { data: diffs } = await getClient().session.diff({
       sessionID: sessionId,
-    }) as { data: FileDiff[] };
+    });
 
-    if (!diffs || diffs.length === 0) {
+    if (!diffs || (diffs as any[]).length === 0) {
       await safeSend(() => ctx.reply("No file changes in this session."));
       return;
     }
+
+    const diffList = diffs as unknown as FileDiff[];
 
     const statusIcon: Record<string, string> = {
       added: "🟢",
@@ -685,15 +677,15 @@ export async function diffCommand(ctx: Context): Promise<void> {
       modified: "🟡",
     };
 
-    const lines = diffs.map((d) => {
+    const lines = diffList.map((d) => {
       const icon = statusIcon[d.status ?? "modified"] ?? "🟡";
       const stats = `<code>+${d.additions} -${d.deletions}</code>`;
       return `${icon} ${stats} ${escapeHtml(d.file)}`;
     });
 
-    const totalAdd = diffs.reduce((s, d) => s + d.additions, 0);
-    const totalDel = diffs.reduce((s, d) => s + d.deletions, 0);
-    const summary = `\n<b>${diffs.length} file${diffs.length === 1 ? "" : "s"}</b> changed: <code>+${totalAdd} -${totalDel}</code>`;
+    const totalAdd = diffList.reduce((s, d) => s + d.additions, 0);
+    const totalDel = diffList.reduce((s, d) => s + d.deletions, 0);
+    const summary = `\n<b>${diffList.length} file${diffList.length === 1 ? "" : "s"}</b> changed: <code>+${totalAdd} -${totalDel}</code>`;
 
     await safeSend(() =>
       ctx.reply(`<b>Changed Files:</b>\n\n${lines.join("\n")}${summary}`, { parse_mode: "HTML" }),
@@ -757,14 +749,14 @@ export async function messagesCommand(ctx: Context): Promise<void> {
     const { data: messages } = await getClient().session.messages({
       sessionID: sessionId,
       limit,
-    }) as { data: Array<{ info: MessageInfo; parts: MessagePart[] }> };
+    });
 
-    if (!messages || messages.length === 0) {
+    if (!messages || (messages as any[]).length === 0) {
       await safeSend(() => ctx.reply("No messages in this session."));
       return;
     }
 
-    const lines = messages.map((m) => {
+    const lines = (messages as any[]).map((m) => {
       const role = m.info.role === "user" ? "👤" : "🤖";
       const textParts = m.parts
         .filter((p) => p.type === "text" && p.text)
@@ -885,9 +877,9 @@ export async function ocShareCommand(ctx: Context): Promise<void> {
   try {
     const { data } = await getClient().session.share({
       sessionID: sessionId,
-    }) as { data: SessionData };
+    });
 
-    const url = data?.share?.url;
+    const url = (data as any)?.share?.url;
     if (url) {
       await safeSend(() =>
         ctx.reply(`🔗 Session shared:\n${url}`),
