@@ -668,14 +668,34 @@ export async function executeShell(ctx: Context, chatId: number, command: string
   );
 
   try {
-    await getClient().session.shell({
+    const result = await getClient().session.shell({
       path: { id: sessionId },
       body: { command },
     });
+
+    // Debug: show what the API returned
+    const data = result?.data;
+    if (data && typeof data === "object") {
+      const keys = Object.keys(data);
+      await safeSend(() =>
+        ctx.reply(
+          `<i>[debug] shell returned keys: ${escapeHtml(JSON.stringify(keys))}, id=${escapeHtml(String((data as any).id ?? "none"))}</i>`,
+          { parse_mode: "HTML" },
+        ),
+      );
+    } else {
+      await safeSend(() =>
+        ctx.reply(`<i>[debug] shell returned: ${escapeHtml(JSON.stringify(result).slice(0, 500))}</i>`, { parse_mode: "HTML" }),
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack?.slice(0, 300) : "";
     await safeSend(() =>
-      ctx.reply(`❌ Shell error: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+      ctx.reply(
+        `❌ Shell error: ${escapeHtml(msg)}${stack ? `\n<pre>${escapeHtml(stack)}</pre>` : ""}`,
+        { parse_mode: "HTML" },
+      ),
     );
   }
 }
