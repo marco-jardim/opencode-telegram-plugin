@@ -26,7 +26,7 @@ import {
   handleSessionError,
   handleSessionStatus,
 } from "./hooks/session.js";
-import { handlePermissionAsked } from "./hooks/permission.js";
+import { handlePermissionAsked, handlePermissionUpdated } from "./hooks/permission.js";
 import { handleToolBefore, handleToolAfter, handleToolPartUpdated, handleFileEdited } from "./hooks/tool.js";
 
 // ---------------------------------------------------------------------------
@@ -323,6 +323,21 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
       if (!event.properties || typeof event.properties !== "object") return;
 
+      // Debug: log event types to trace flow (temporary)
+      if (event.type.startsWith("message.part.")) {
+        const props = event.properties as Record<string, unknown>;
+        const part = props.part as Record<string, unknown> | undefined;
+        const partType = part?.type ?? props.field ?? "?";
+        const partId = part?.id ?? props.partID ?? "?";
+        void client.app.log({
+          body: {
+            service: "telegram-plugin",
+            level: "info",
+            message: `[event] ${event.type} partType=${partType} partId=${String(partId).slice(0, 8)}`,
+          },
+        });
+      }
+
       switch (event.type) {
         // ── Streaming: delta events carry incremental text chunks ──────
         case "message.part.delta":
@@ -383,6 +398,13 @@ export const TelegramPlugin: Plugin = async (ctx) => {
         case "permission.asked":
           handlePermissionAsked(
             event as Parameters<typeof handlePermissionAsked>[0],
+            hookCtx,
+          );
+          break;
+
+        case "permission.updated":
+          handlePermissionUpdated(
+            event as Parameters<typeof handlePermissionUpdated>[0],
             hookCtx,
           );
           break;
