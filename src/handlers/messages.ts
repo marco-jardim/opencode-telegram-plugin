@@ -1,4 +1,5 @@
 import type { Context } from "grammy";
+import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { getActiveSessionId, attachSession } from "../state/mode.js";
 import { getChatState } from "../state/store.js";
 import { safeSend } from "../utils/safeSend.js";
@@ -6,7 +7,7 @@ import { escapeHtml } from "../utils/format.js";
 import { executeShell } from "./commands.js";
 
 // ---------------------------------------------------------------------------
-// Client interface — only the methods used in this file
+// Client — v2 SDK (flat parameter style)
 // ---------------------------------------------------------------------------
 
 interface SessionSummary {
@@ -15,31 +16,13 @@ interface SessionSummary {
   createdAt: string;
 }
 
-interface OpenCodeClient {
-  session: {
-    list(): Promise<{ data: SessionSummary[] }>;
-    prompt(params: {
-      path: { id: string };
-      body: {
-        parts: [{ type: "text"; text: string }];
-        model?: { providerID: string; modelID: string };
-        effort?: string;
-      };
-    }): Promise<{ data: { info: unknown; parts: unknown[] } }>;
-  };
-  postSessionIdPermissionsPermissionId(params: {
-    path: { id: string; permissionID: string };
-    body: { response: "once" | "always" | "reject" };
-  }): Promise<unknown>;
+let _client: OpencodeClient | null = null;
+
+export function setClient(client: OpencodeClient): void {
+  _client = client;
 }
 
-let _client: OpenCodeClient | null = null;
-
-export function setClient(client: unknown): void {
-  _client = client as OpenCodeClient;
-}
-
-function getClient(): OpenCodeClient {
+function getClient(): OpencodeClient {
   if (!_client) throw new Error("OpenCode client not initialized");
   return _client;
 }
@@ -54,7 +37,7 @@ function getClient(): OpenCodeClient {
  */
 async function tryAutoAttach(chatId: number): Promise<string | null> {
   try {
-    const { data: sessions } = await getClient().session.list();
+    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
     if (sessions.length === 0) return null;
 
     const latest = [...sessions].sort(
@@ -128,9 +111,10 @@ async function tryPermissionReply(ctx: Context, chatId: number, text: string): P
   if (!targetPerm) return false;
 
   try {
-    await getClient().postSessionIdPermissionsPermissionId({
-      path: { id: targetPerm.sessionId, permissionID: targetPerm.permissionId },
-      body: { response: reply },
+    await getClient().permission.respond({
+      sessionID: targetPerm.sessionId,
+      permissionID: targetPerm.permissionId,
+      response: reply,
     });
 
     state.pendingPermissions.delete(targetPerm.permissionId);
@@ -226,27 +210,18 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
 
   // Build prompt body with optional model/effort overrides
   const chatState = getChatState(chatId);
-  const promptBody: {
-    parts: [{ type: "text"; text: string }];
-    model?: { providerID: string; modelID: string };
-    effort?: string;
-  } = { parts: [{ type: "text", text }] };
-
-  if (chatState.selectedModel) {
-    promptBody.model = {
-      providerID: chatState.selectedModel.providerID,
-      modelID: chatState.selectedModel.modelID,
-    };
-  }
-  if (chatState.effort !== "high") {
-    promptBody.effort = chatState.effort;
-  }
 
   try {
     void getClient()
       .session.prompt({
-        path: { id: capturedSessionId },
-        body: promptBody,
+        sessionID: capturedSessionId,
+        parts: [{ type: "text" as const, text }],
+        ...(chatState.selectedModel ? {
+          model: {
+            providerID: chatState.selectedModel.providerID,
+            modelID: chatState.selectedModel.modelID,
+          },
+        } : {}),
       })
       .catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);

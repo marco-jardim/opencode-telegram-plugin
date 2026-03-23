@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 
 import { createBot, injectClient, registerBotMenu } from "./bot.js";
 import { initMapping } from "./state/mapping.js";
@@ -150,7 +151,13 @@ function handleTelegramCommand(args: string | undefined): string {
 // ---------------------------------------------------------------------------
 
 export const TelegramPlugin: Plugin = async (ctx) => {
-  const { client, directory } = ctx;
+  const { client, directory, serverUrl } = ctx;
+
+  // ── Create v2 SDK client (flat params, agent optional on shell) ─────────
+  const v2 = createOpencodeClient({
+    baseUrl: serverUrl.toString(),
+    directory,
+  });
 
   // ── Resolve configuration (config file + env vars) ─────────────────────
   let config: ReturnType<typeof resolveConfig>;
@@ -158,24 +165,20 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     config = resolveConfig();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await client.app.log({
-      body: {
-        service: "telegram-plugin",
-        level: "error",
-        message: "Failed to resolve config: " + msg,
-      },
+    await v2.app.log({
+      service: "telegram-plugin",
+      level: "error",
+      message: "Failed to resolve config: " + msg,
     });
     return {};
   }
 
   if (!config.botToken) {
-    await client.app.log({
-      body: {
-        service: "telegram-plugin",
-        level: "warn",
-        message:
-          "No bot token found (env or config file) — Telegram bot disabled. Use /telegram set-token to configure.",
-      },
+    await v2.app.log({
+      service: "telegram-plugin",
+      level: "warn",
+      message:
+        "No bot token found (env or config file) — Telegram bot disabled. Use /telegram set-token to configure.",
     });
 
     // Even without a token, register the /telegram command so users can configure
@@ -204,23 +207,19 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     initMapping(dataDir);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await client.app.log({
-      body: {
-        service: "telegram-plugin",
-        level: "error",
-        message: "Failed to init mapping store: " + msg,
-      },
+    await v2.app.log({
+      service: "telegram-plugin",
+      level: "error",
+      message: "Failed to init mapping store: " + msg,
     });
   }
 
   // ── Create bot ────────────────────────────────────────────────────────
   const maskedToken = config.botToken.slice(0, 6) + "..." + config.botToken.slice(-4);
-  await client.app.log({
-    body: {
-      service: "telegram-plugin",
-      level: "info",
-      message: "Initializing Telegram bot (token: " + maskedToken + ", source: " + config.tokenSource + ", allowed_users: " + (config.allowedUsers || "all") + ")",
-    },
+  await v2.app.log({
+    service: "telegram-plugin",
+    level: "info",
+    message: "Initializing Telegram bot (token: " + maskedToken + ", source: " + config.tokenSource + ", allowed_users: " + (config.allowedUsers || "all") + ")",
   });
 
   let bot: ReturnType<typeof createBot>;
@@ -230,24 +229,20 @@ export const TelegramPlugin: Plugin = async (ctx) => {
       allowedUsers: config.allowedUsers,
       onError: (message, error) => {
         const detail = error instanceof Error ? error.message : String(error);
-        void client.app.log({
-          body: {
-            service: "telegram-plugin",
-            level: "error",
-            message: message + " " + detail,
-          },
+        void v2.app.log({
+          service: "telegram-plugin",
+          level: "error",
+          message: message + " " + detail,
         });
       },
     });
-    injectClient(client);
+    injectClient(v2);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await client.app.log({
-      body: {
-        service: "telegram-plugin",
-        level: "error",
-        message: "Failed to create bot: " + msg,
-      },
+    await v2.app.log({
+      service: "telegram-plugin",
+      level: "error",
+      message: "Failed to create bot: " + msg,
     });
     return {};
   }
@@ -262,12 +257,10 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   void bot.start({
     drop_pending_updates: true,
     onStart: () => {
-      void client.app.log({
-        body: {
-          service: "telegram-plugin",
-          level: "info",
-          message: "Telegram bot started (token from " + config.tokenSource + ").",
-        },
+      void v2.app.log({
+        service: "telegram-plugin",
+        level: "info",
+        message: "Telegram bot started (token from " + config.tokenSource + ").",
       });
 
       // Register bot commands in Telegram's menu (non-blocking)
@@ -279,12 +272,10 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     ],
   }).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
-    void client.app.log({
-      body: {
-        service: "telegram-plugin",
-        level: "error",
-        message: "Telegram bot failed to start: " + msg,
-      },
+    void v2.app.log({
+      service: "telegram-plugin",
+      level: "error",
+      message: "Telegram bot failed to start: " + msg,
     });
   });
 
@@ -322,21 +313,6 @@ export const TelegramPlugin: Plugin = async (ctx) => {
     // ── Event dispatcher ──────────────────────────────────────────────
     event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
       if (!event.properties || typeof event.properties !== "object") return;
-
-      // Debug: log event types to trace flow (temporary)
-      if (event.type.startsWith("message.part.")) {
-        const props = event.properties as Record<string, unknown>;
-        const part = props.part as Record<string, unknown> | undefined;
-        const partType = part?.type ?? props.field ?? "?";
-        const partId = part?.id ?? props.partID ?? "?";
-        void client.app.log({
-          body: {
-            service: "telegram-plugin",
-            level: "info",
-            message: `[event] ${event.type} partType=${partType} partId=${String(partId).slice(0, 8)}`,
-          },
-        });
-      }
 
       switch (event.type) {
         // ── Streaming: delta events carry incremental text chunks ──────

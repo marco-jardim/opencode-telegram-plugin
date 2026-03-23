@@ -1,5 +1,6 @@
 import { Bot } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
+import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
 
 import {
   startCommand,
@@ -148,7 +149,7 @@ export function createBot(opts: CreateBotOptions): Bot {
  *
  * Must be called once before the bot starts processing updates.
  */
-export function injectClient(client: unknown): void {
+export function injectClient(client: OpencodeClient): void {
   setCommandsClient(client);
   setMessagesClient(client);
   setCallbacksClient(client);

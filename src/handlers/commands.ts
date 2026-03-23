@@ -1,5 +1,6 @@
 import type { Context } from "grammy";
 import { InlineKeyboard } from "grammy";
+import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { getChatState, cleanupChatStream, registerCallback, type SelectedModel, type EffortLevel } from "../state/store.js";
 import {
   getActiveSessionId,
@@ -13,7 +14,7 @@ import { safeSend } from "../utils/safeSend.js";
 import { escapeHtml } from "../utils/format.js";
 
 // ---------------------------------------------------------------------------
-// Client interface — only the methods used in this file
+// Client — v2 SDK (flat parameter style)
 // ---------------------------------------------------------------------------
 
 interface SessionSummary {
@@ -57,44 +58,13 @@ interface OpenCodeCommand {
   source?: string;
 }
 
-interface OpenCodeClient {
-  session: {
-    list(): Promise<{ data: SessionSummary[] }>;
-    create(params: { body: { title: string } }): Promise<{ data: { id: string } }>;
-    abort(params: { path: { id: string } }): Promise<boolean>;
-    shell(params: { path: { id: string }; body: { command: string; agent?: string } }): Promise<{ data: AssistantMessage }>;
-    diff(params: { path: { id: string }; query?: { messageID?: string } }): Promise<{ data: FileDiff[] }>;
-    share(params: { path: { id: string } }): Promise<{ data: SessionData }>;
-    unshare(params: { path: { id: string } }): Promise<{ data: SessionData }>;
-    revert(params: { path: { id: string }; body?: { messageID: string } }): Promise<{ data: SessionData }>;
-    unrevert(params: { path: { id: string } }): Promise<{ data: SessionData }>;
-    summarize(params: { path: { id: string }; body?: { providerID: string; modelID: string } }): Promise<{ data: boolean }>;
-    messages(params: { path: { id: string }; query?: { limit?: number } }): Promise<{ data: Array<{ info: MessageInfo; parts: MessagePart[] }> }>;
-    command(params: { path: { id: string }; body: { command: string; arguments: string } }): Promise<{ data: unknown }>;
-  };
-  config: {
-    providers(): Promise<{
-      data: {
-        providers: Array<{
-          id: string;
-          name: string;
-          models: Record<string, { id: string; name: string }>;
-        }>;
-      };
-    }>;
-  };
-  command: {
-    list(): Promise<{ data: OpenCodeCommand[] }>;
-  };
+let _client: OpencodeClient | null = null;
+
+export function setClient(client: OpencodeClient): void {
+  _client = client;
 }
 
-let _client: OpenCodeClient | null = null;
-
-export function setClient(client: unknown): void {
-  _client = client as OpenCodeClient;
-}
-
-function getClient(): OpenCodeClient {
+function getClient(): OpencodeClient {
   if (!_client) throw new Error("OpenCode client not initialized");
   return _client;
 }
@@ -188,7 +158,7 @@ export async function startCommand(ctx: Context): Promise<void> {
   if (!autoAttach) return;
 
   try {
-    const { data: sessions } = await getClient().session.list();
+    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
     if (sessions.length === 0) return;
 
     const latest = sortedSessions(sessions, 1)[0]!;
@@ -229,7 +199,7 @@ export async function attachCommand(ctx: Context): Promise<void> {
 
   // No session ID provided — show a picker
   try {
-    const { data: sessions } = await getClient().session.list();
+    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
 
     if (sessions.length === 0) {
       await safeSend(() =>
@@ -276,7 +246,7 @@ export async function newCommand(ctx: Context): Promise<void> {
     (typeof ctx.match === "string" ? ctx.match.trim() : "") || "Telegram Session";
 
   try {
-    const { data } = await getClient().session.create({ body: { title } });
+    const { data } = await getClient().session.create({ title }) as { data: { id: string } };
     startIndependentSession(chatId, data.id);
 
     await safeSend(() =>
@@ -300,7 +270,7 @@ export async function sessionsCommand(ctx: Context): Promise<void> {
   if (!chatId) return;
 
   try {
-    const { data: sessions } = await getClient().session.list();
+    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
 
     if (sessions.length === 0) {
       await safeSend(() =>
@@ -361,7 +331,7 @@ export async function switchCommand(ctx: Context): Promise<void> {
 
   // No ID provided — show a picker (same UX as /attach)
   try {
-    const { data: sessions } = await getClient().session.list();
+    const { data: sessions } = await getClient().session.list() as { data: SessionSummary[] };
 
     if (sessions.length === 0) {
       await safeSend(() =>
@@ -420,7 +390,7 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
     // Validate provider exists, but allow any model ID (favorites may not be in models list)
     try {
-      const { data } = await getClient().config.providers();
+      const { data } = await getClient().config.providers() as { data: { providers: Array<{ id: string; name: string; models: Record<string, { id: string; name: string }> }> } };
       const providers = data?.providers ?? [];
       const provider = providers.find((p) => p.id === providerID);
 
@@ -460,7 +430,7 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
   // /model (no args) — list available models
   try {
-    const { data } = await getClient().config.providers();
+    const { data } = await getClient().config.providers() as { data: { providers: Array<{ id: string; name: string; models: Record<string, { id: string; name: string }> }> } };
     const providers = data?.providers ?? [];
 
     if (providers.length === 0) {
@@ -612,7 +582,7 @@ export async function abortCommand(ctx: Context): Promise<void> {
   }
 
   try {
-    await getClient().session.abort({ path: { id: activeId } });
+    await getClient().session.abort({ sessionID: activeId });
     cleanupChatStream(chatId);
     await safeSend(() => ctx.reply("⛔ Aborted."));
   } catch (err) {
@@ -646,9 +616,8 @@ export async function shellCommand(ctx: Context): Promise<void> {
  * Execute a shell command in the current session.
  * Shared between /shell and !<cmd>.
  *
- * session.shell() works like session.prompt() — it fires the command and the
- * output streams back through event hooks (message.part.delta / updated).
- * We send a confirmation header and let the streaming handle the rest.
+ * Uses session.shell() from the v2 SDK where agent is optional.
+ * The output streams back through event hooks (message.part.delta / updated).
  */
 export async function executeShell(ctx: Context, chatId: number, command: string): Promise<void> {
   const sessionId = getActiveSessionId(chatId);
@@ -668,28 +637,10 @@ export async function executeShell(ctx: Context, chatId: number, command: string
   );
 
   try {
-    // Use session.prompt with a shell instruction — session.shell() requires
-    // a valid agent name which we don't reliably know. The prompt approach
-    // lets the AI execute the command via its bash tool.
-    const chatState = getChatState(chatId);
-    const promptBody: {
-      parts: [{ type: "text"; text: string }];
-      model?: { providerID: string; modelID: string };
-      effort?: string;
-    } = {
-      parts: [{ type: "text", text: `Run this shell command and show me the output. Do not explain, just run it:\n\`\`\`\n${command}\n\`\`\`` }],
-    };
-
-    if (chatState.selectedModel) {
-      promptBody.model = {
-        providerID: chatState.selectedModel.providerID,
-        modelID: chatState.selectedModel.modelID,
-      };
-    }
-
-    void getClient().session.prompt({
-      path: { id: sessionId },
-      body: promptBody,
+    // v2 SDK: agent is optional — no need to guess an agent name
+    void getClient().session.shell({
+      sessionID: sessionId,
+      command,
     }).catch(async (err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       await safeSend(() =>
@@ -720,8 +671,8 @@ export async function diffCommand(ctx: Context): Promise<void> {
 
   try {
     const { data: diffs } = await getClient().session.diff({
-      path: { id: sessionId },
-    });
+      sessionID: sessionId,
+    }) as { data: FileDiff[] };
 
     if (!diffs || diffs.length === 0) {
       await safeSend(() => ctx.reply("No file changes in this session."));
@@ -804,9 +755,9 @@ export async function messagesCommand(ctx: Context): Promise<void> {
 
   try {
     const { data: messages } = await getClient().session.messages({
-      path: { id: sessionId },
-      query: { limit },
-    });
+      sessionID: sessionId,
+      limit,
+    }) as { data: Array<{ info: MessageInfo; parts: MessagePart[] }> };
 
     if (!messages || messages.length === 0) {
       await safeSend(() => ctx.reply("No messages in this session."));
@@ -852,7 +803,7 @@ export async function ocUndoCommand(ctx: Context): Promise<void> {
 
   try {
     await getClient().session.revert({
-      path: { id: sessionId },
+      sessionID: sessionId,
     });
     await safeSend(() => ctx.reply("↩️ Undone. File changes reverted."));
   } catch (err) {
@@ -879,7 +830,7 @@ export async function ocRedoCommand(ctx: Context): Promise<void> {
 
   try {
     await getClient().session.unrevert({
-      path: { id: sessionId },
+      sessionID: sessionId,
     });
     await safeSend(() => ctx.reply("↪️ Redone. Changes restored."));
   } catch (err) {
@@ -906,7 +857,7 @@ export async function ocCompactCommand(ctx: Context): Promise<void> {
 
   try {
     await getClient().session.summarize({
-      path: { id: sessionId },
+      sessionID: sessionId,
     });
     await safeSend(() => ctx.reply("📦 Session compacted."));
   } catch (err) {
@@ -933,8 +884,8 @@ export async function ocShareCommand(ctx: Context): Promise<void> {
 
   try {
     const { data } = await getClient().session.share({
-      path: { id: sessionId },
-    });
+      sessionID: sessionId,
+    }) as { data: SessionData };
 
     const url = data?.share?.url;
     if (url) {
@@ -1000,8 +951,9 @@ export async function ocGenericCommand(commandName: string, ctx: Context): Promi
 
   try {
     await getClient().session.command({
-      path: { id: sessionId },
-      body: { command: commandName, arguments: args || "" },
+      sessionID: sessionId,
+      command: commandName,
+      arguments: args || "",
     });
     await safeSend(() =>
       ctx.reply(`✅ Command <code>/${escapeHtml(commandName)}</code> sent.`, { parse_mode: "HTML" }),

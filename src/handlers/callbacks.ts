@@ -1,27 +1,21 @@
 import type { Context } from "grammy";
+import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { resolveCallback, getChatState } from "../state/store.js";
 import { attachSession } from "../state/mode.js";
 import { safeSend } from "../utils/safeSend.js";
 import { escapeHtml } from "../utils/format.js";
 
 // ---------------------------------------------------------------------------
-// Client interface — only the methods used in this file
+// Client — v2 SDK (flat parameter style)
 // ---------------------------------------------------------------------------
 
-interface OpenCodeClient {
-  postSessionIdPermissionsPermissionId(params: {
-    path: { id: string; permissionID: string };
-    body: { response: "once" | "always" | "reject" };
-  }): Promise<unknown>;
+let _client: OpencodeClient | null = null;
+
+export function setClient(client: OpencodeClient): void {
+  _client = client;
 }
 
-let _client: OpenCodeClient | null = null;
-
-export function setClient(client: unknown): void {
-  _client = client as OpenCodeClient;
-}
-
-function getClient(): OpenCodeClient {
+function getClient(): OpencodeClient {
   if (!_client) throw new Error("OpenCode client not initialized");
   return _client;
 }
@@ -102,9 +96,10 @@ export async function handleCallback(ctx: Context): Promise<void> {
           return;
         }
 
-        await getClient().postSessionIdPermissionsPermissionId({
-          path: { id: sessionId, permissionID: permissionId },
-          body: { response: "once" },
+        await getClient().permission.respond({
+          sessionID: sessionId,
+          permissionID: permissionId,
+          response: "once",
         });
 
         getChatState(chatId).pendingPermissions.delete(permissionId);
@@ -128,9 +123,10 @@ export async function handleCallback(ctx: Context): Promise<void> {
           return;
         }
 
-        await getClient().postSessionIdPermissionsPermissionId({
-          path: { id: sessionId, permissionID: permissionId },
-          body: { response: "always" },
+        await getClient().permission.respond({
+          sessionID: sessionId,
+          permissionID: permissionId,
+          response: "always",
         });
 
         getChatState(chatId).pendingPermissions.delete(permissionId);
@@ -155,9 +151,10 @@ export async function handleCallback(ctx: Context): Promise<void> {
         }
 
         try {
-          await getClient().postSessionIdPermissionsPermissionId({
-            path: { id: sessionId, permissionID: permissionId },
-            body: { response: "reject" },
+          await getClient().permission.respond({
+            sessionID: sessionId,
+            permissionID: permissionId,
+            response: "reject",
           });
         } catch {
           // SDK may not support explicit deny — fall through silently

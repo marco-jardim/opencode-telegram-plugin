@@ -29,6 +29,7 @@
     "@grammyjs/auto-retry": "^2.0.0"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
+    "@opencode-ai/plugin": ">=1.0.0",
+    "@opencode-ai/sdk": ">=1.0.0"
   }
 }
