@@ -154,12 +154,24 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   const { client, directory, serverUrl } = ctx;
 
   // ── Create v2 SDK client (flat params, agent optional on shell) ─────────
-  // serverUrl is a URL object from the plugin context — extract its origin
-  const baseUrl = typeof serverUrl === "object" && serverUrl instanceof URL
-    ? serverUrl.origin
-    : typeof serverUrl === "string"
-      ? serverUrl.replace(/\/$/, "")
-      : String(serverUrl).replace(/\/$/, "");
+  // Extract baseUrl from the v1 client that OpenCode already configured,
+  // falling back to serverUrl if the internal client config isn't accessible.
+  let baseUrl: string;
+  try {
+    // v1 client stores its HTTP client in ._client with a getConfig() method
+    const v1Config = (client as any)?._client?.getConfig?.();
+    baseUrl = v1Config?.baseUrl ?? "";
+  } catch {
+    baseUrl = "";
+  }
+  if (!baseUrl) {
+    // Fallback to serverUrl from plugin context
+    baseUrl = typeof serverUrl === "object" && serverUrl instanceof URL
+      ? serverUrl.origin
+      : typeof serverUrl === "string"
+        ? serverUrl.replace(/\/$/, "")
+        : String(serverUrl).replace(/\/$/, "");
+  }
   const v2 = createOpencodeClient({
     baseUrl,
     directory,
@@ -225,7 +237,7 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   await v2.app.log({
     service: "telegram-plugin",
     level: "info",
-    message: "Initializing Telegram bot (token: " + maskedToken + ", source: " + config.tokenSource + ", allowed_users: " + (config.allowedUsers || "all") + ")",
+    message: "Initializing Telegram bot (token: " + maskedToken + ", source: " + config.tokenSource + ", allowed_users: " + (config.allowedUsers || "all") + ", baseUrl: " + baseUrl + ")",
   });
 
   let bot: ReturnType<typeof createBot>;
@@ -242,7 +254,7 @@ export const TelegramPlugin: Plugin = async (ctx) => {
         });
       },
     });
-    injectClient(v2);
+    injectClient(v2, baseUrl);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await v2.app.log({

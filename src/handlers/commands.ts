@@ -51,9 +51,14 @@ interface OpenCodeCommand {
 }
 
 let _client: OpencodeClient | null = null;
+let _baseUrl: string = "(unknown)";
 
 export function setClient(client: OpencodeClient): void {
   _client = client;
+}
+
+export function setBaseUrl(url: string): void {
+  _baseUrl = url;
 }
 
 function getClient(): OpencodeClient {
@@ -614,6 +619,7 @@ export async function statusCommand(ctx: Context): Promise<void> {
     `Model:   ${modelLine}`,
     `Effort:  ${effortEmoji} <b>${escapeHtml(state.effort)}</b>`,
     `Stream:  ${state.stream.state !== "IDLE" && state.stream.state !== "FINAL" ? "⏳ active" : "⬜ idle"}`,
+    `Server:  <code>${escapeHtml(_baseUrl)}</code>`,
   ];
 
   await safeSend(() =>

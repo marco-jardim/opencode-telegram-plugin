@@ -26,6 +26,7 @@ import {
   ocGenericCommand,
   discoverCommands,
   setClient as setCommandsClient,
+  setBaseUrl,
 } from "./handlers/commands.js";
 import {
   handleTextMessage,
@@ -149,10 +150,11 @@ export function createBot(opts: CreateBotOptions): Bot {
  *
  * Must be called once before the bot starts processing updates.
  */
-export function injectClient(client: OpencodeClient): void {
+export function injectClient(client: OpencodeClient, baseUrl?: string): void {
   setCommandsClient(client);
   setMessagesClient(client);
   setCallbacksClient(client);
+  if (baseUrl) setBaseUrl(baseUrl);
 }
 
 // ---------------------------------------------------------------------------
