@@ -206,15 +206,20 @@ export function handleToolPartUpdated(
 
         const title = part.state.title || part.tool;
         const filePath = extractFilePath(part.state.input);
-        const fileInfo = filePath ? `\n📄 <code>${escapeHtml(filePath)}</code>` : "";
+        const command = isBashTool(part.tool) ? extractCommand(part.state.input) : null;
+
+        let msgText = `🔧 <b>${escapeHtml(title)}</b>`;
+        if (filePath) {
+          msgText += `\n📄 <code>${escapeHtml(filePath)}</code>`;
+        }
+        if (command) {
+          const cmdPreview = command.length > 200 ? command.slice(0, 200) + "…" : command;
+          msgText += `\n<pre>$ ${escapeHtml(cmdPreview)}</pre>`;
+        }
 
         void (async () => {
           const result = await safeSend(() =>
-            api.sendMessage(
-              chatId,
-              `🔧 <b>${escapeHtml(title)}</b>${fileInfo}`,
-              { parse_mode: "HTML" },
-            ),
+            api.sendMessage(chatId, msgText, { parse_mode: "HTML" }),
           );
           sentToolMessages.set(key, {
             status: "running",
@@ -235,9 +240,10 @@ export function handleToolPartUpdated(
           ? `${duration}ms`
           : `${(duration / 1000).toFixed(1)}s`;
 
-        // For edit tools, show the diff output
         const output = part.state.output ?? "";
         const isEdit = isEditTool(part.tool);
+        const isBash = isBashTool(part.tool);
+        const command = isBash ? extractCommand(part.state.input) : null;
 
         let body = `✅ <b>${escapeHtml(title)}</b>`;
         if (filePath) {
@@ -245,11 +251,26 @@ export function handleToolPartUpdated(
         }
         body += ` <i>(${durationStr})</i>`;
 
-        if (isEdit && output.trim()) {
-          // Truncate diff to reasonable size for Telegram
-          const diff = output.trim();
+        if (isBash && command) {
+          const cmdPreview = command.length > 100 ? command.slice(0, 100) + "…" : command;
+          body += `\n<pre>$ ${escapeHtml(cmdPreview)}</pre>`;
+        }
+
+        // For edit tools, show the diff from input (oldString → newString)
+        if (isEdit) {
+          const diff = buildEditDiff(part.state.input);
+          if (diff) {
+            const maxLen = 3500 - body.length;
+            const truncated = diff.length > maxLen ? diff.slice(0, maxLen) + "\n…(truncated)" : diff;
+            body += `\n<pre>${escapeHtml(truncated)}</pre>`;
+          }
+        }
+
+        // For bash tools, show the command output
+        if (isBash && output.trim()) {
           const maxLen = 3500 - body.length;
-          const truncated = diff.length > maxLen ? diff.slice(0, maxLen) + "\n…(truncated)" : diff;
+          const outTrimmed = output.trim();
+          const truncated = outTrimmed.length > maxLen ? outTrimmed.slice(0, maxLen) + "\n…(truncated)" : outTrimmed;
           body += `\n<pre>${escapeHtml(truncated)}</pre>`;
         }
 
@@ -260,7 +281,6 @@ export function handleToolPartUpdated(
               api.editMessageText(chatId, prev.messageId!, body, { parse_mode: "HTML" }),
             );
             if (!editResult.ok) {
-              // Fallback: send new message
               await safeSend(() =>
                 api.sendMessage(chatId, body, { parse_mode: "HTML" }),
               );
@@ -334,12 +354,50 @@ function extractFilePath(input: ToolInput): string | null {
     const val = input[k];
     if (typeof val === "string" && val.trim()) return val.trim();
   }
-
-  // Check for nested command/args patterns
-  if (typeof input.command === "string") {
-    // For bash/shell tools, try to extract filename from command
-    return null;
-  }
-
   return null;
+}
+
+/**
+ * Extract the shell command from a bash/shell tool input.
+ */
+function extractCommand(input: ToolInput): string | null {
+  for (const k of ["command", "cmd", "script"]) {
+    const val = input[k];
+    if (typeof val === "string" && val.trim()) return val.trim();
+  }
+  return null;
+}
+
+/**
+ * For edit tools, build a readable diff from the tool input (oldString/newString).
+ */
+function buildEditDiff(input: ToolInput): string | null {
+  const oldStr = input.oldString ?? input.old_string ?? input.old_str ?? input.search;
+  const newStr = input.newString ?? input.new_string ?? input.new_str ?? input.replace;
+
+  if (typeof oldStr !== "string" && typeof newStr !== "string") return null;
+
+  const lines: string[] = [];
+  if (typeof oldStr === "string" && oldStr.trim()) {
+    const oldLines = oldStr.split("\n");
+    for (const line of oldLines) {
+      lines.push(`- ${line}`);
+    }
+  }
+  if (typeof newStr === "string" && newStr.trim()) {
+    const newLines = newStr.split("\n");
+    for (const line of newLines) {
+      lines.push(`+ ${line}`);
+    }
+  }
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
+/**
+ * Check if a tool is a bash/shell command tool.
+ */
+function isBashTool(tool: string): boolean {
+  const key = tool.toLowerCase().replace(/[^a-z_]/g, "");
+  return key === "bash" || key === "shell" || key === "execute" || key === "run" ||
+    key.startsWith("bash") || key.startsWith("shell") || key.startsWith("exec");
 }
