@@ -32,9 +32,6 @@ import { handleToolBefore, handleToolAfter, handleToolPartUpdated, handleFileEdi
 
 // ---------------------------------------------------------------------------
 // /telegram slash command handler
-// DEBUG: exposed for commands.ts debug logging
-export let _debugServerUrl = "(not set)";
-
 // ---------------------------------------------------------------------------
 
 function handleTelegramCommand(args: string | undefined): string {
@@ -157,10 +154,14 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   const { client, directory, serverUrl } = ctx;
 
   // ── Create v2 SDK client (flat params, agent optional on shell) ─────────
-  const serverUrlStr = serverUrl.toString().replace(/\/$/, "");
-  _debugServerUrl = serverUrlStr;
+  // serverUrl is a URL object from the plugin context — extract its origin
+  const baseUrl = typeof serverUrl === "object" && serverUrl instanceof URL
+    ? serverUrl.origin
+    : typeof serverUrl === "string"
+      ? serverUrl.replace(/\/$/, "")
+      : String(serverUrl).replace(/\/$/, "");
   const v2 = createOpencodeClient({
-    baseUrl: serverUrlStr,
+    baseUrl,
     directory,
   });
 
