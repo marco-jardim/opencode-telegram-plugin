@@ -62,7 +62,7 @@ interface OpenCodeClient {
     list(): Promise<{ data: SessionSummary[] }>;
     create(params: { body: { title: string } }): Promise<{ data: { id: string } }>;
     abort(params: { path: { id: string } }): Promise<boolean>;
-    shell(params: { path: { id: string }; body: { agent: string; command: string } }): Promise<{ data: AssistantMessage }>;
+    shell(params: { path: { id: string }; body: { command: string; agent?: string } }): Promise<{ data: AssistantMessage }>;
     diff(params: { path: { id: string }; query?: { messageID?: string } }): Promise<{ data: FileDiff[] }>;
     share(params: { path: { id: string } }): Promise<{ data: SessionData }>;
     unshare(params: { path: { id: string } }): Promise<{ data: SessionData }>;
@@ -648,7 +648,7 @@ export async function shellCommand(ctx: Context): Promise<void> {
  *
  * session.shell() works like session.prompt() — it fires the command and the
  * output streams back through event hooks (message.part.delta / updated).
- * We just send a confirmation header and let the streaming handle the rest.
+ * We send a confirmation header and let the streaming handle the rest.
  */
 export async function executeShell(ctx: Context, chatId: number, command: string): Promise<void> {
   const sessionId = getActiveSessionId(chatId);
@@ -668,14 +668,9 @@ export async function executeShell(ctx: Context, chatId: number, command: string
   );
 
   try {
-    void getClient().session.shell({
+    await getClient().session.shell({
       path: { id: sessionId },
-      body: { agent: "", command },
-    }).catch(async (err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      await safeSend(() =>
-        ctx.reply(`❌ Shell error: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
-      );
+      body: { command },
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
