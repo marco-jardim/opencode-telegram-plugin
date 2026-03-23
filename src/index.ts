@@ -158,10 +158,15 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   console.error(`[TELEGRAM-DEBUG] ctx keys=${Object.keys(ctx).join(",")}`);
 
   // ── Create v2 SDK client (flat params, agent optional on shell) ─────────
+  const serverUrlStr = serverUrl.toString().replace(/\/$/, "");
+  console.error(`[TELEGRAM-DEBUG] creating v2 client with baseUrl=${serverUrlStr}`);
   const v2 = createOpencodeClient({
-    baseUrl: serverUrl.toString(),
+    baseUrl: serverUrlStr,
     directory,
   });
+  // Verify the client config
+  const v2Cfg = (v2 as any).client?.getConfig?.() ?? {};
+  console.error(`[TELEGRAM-DEBUG] v2 client config baseUrl=${v2Cfg.baseUrl}`);
 
   // ── Resolve configuration (config file + env vars) ─────────────────────
   let config: ReturnType<typeof resolveConfig>;
