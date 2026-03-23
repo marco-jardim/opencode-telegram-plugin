@@ -191,8 +191,13 @@ export async function attachCommand(ctx: Context): Promise<void> {
 
   // No session ID provided — show a picker
   try {
-    const { data: sessions } = await getClient().session.list();
-    if (!sessions || sessions.length === 0) {
+    const result = await getClient().session.list();
+    const sessions = result.data;
+    // DEBUG: log raw response shape
+    await safeSend(() =>
+      ctx.reply(`[DEBUG] session.list() keys=${Object.keys(result).join(",")}\ndata type=${typeof result.data}\ndata=${JSON.stringify(result.data)?.slice(0, 500)}\nerror=${JSON.stringify(result.error)?.slice(0, 300)}`, { parse_mode: undefined as any }),
+    );
+    if (!sessions || (Array.isArray(sessions) && sessions.length === 0)) {
       await safeSend(() =>
         ctx.reply("No sessions found. Use /new to create one."),
       );
