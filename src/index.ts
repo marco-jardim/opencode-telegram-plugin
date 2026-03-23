@@ -154,24 +154,41 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   const { client, directory, serverUrl } = ctx;
 
   // ── Create v2 SDK client (flat params, agent optional on shell) ─────────
-  // Extract baseUrl from the v1 client that OpenCode already configured,
-  // falling back to serverUrl if the internal client config isn't accessible.
-  let baseUrl: string;
+  // Strategy: extract the working baseUrl from the v1 client's HTTP config,
+  // try serverUrl.href, and fall back to localhost:4096.
+  let baseUrl: string = "";
+
+  // 1. Try v1 client's internal HTTP client config (most reliable)
   try {
-    // v1 client stores its HTTP client in ._client with a getConfig() method
     const v1Config = (client as any)?._client?.getConfig?.();
-    baseUrl = v1Config?.baseUrl ?? "";
+    if (v1Config?.baseUrl && typeof v1Config.baseUrl === "string") {
+      baseUrl = v1Config.baseUrl;
+    }
   } catch {
-    baseUrl = "";
+    // ignored
   }
+
+  // 2. Try serverUrl (URL object from plugin context)
   if (!baseUrl) {
-    // Fallback to serverUrl from plugin context
-    baseUrl = typeof serverUrl === "object" && serverUrl instanceof URL
-      ? serverUrl.origin
-      : typeof serverUrl === "string"
-        ? serverUrl.replace(/\/$/, "")
-        : String(serverUrl).replace(/\/$/, "");
+    try {
+      if (typeof serverUrl === "object" && "href" in serverUrl) {
+        // Use href (full URL) and strip trailing slash
+        baseUrl = String(serverUrl.href).replace(/\/$/, "");
+      } else if (typeof serverUrl === "string") {
+        baseUrl = serverUrl.replace(/\/$/, "");
+      } else {
+        baseUrl = String(serverUrl).replace(/\/$/, "");
+      }
+    } catch {
+      // ignored
+    }
   }
+
+  // 3. Final fallback
+  if (!baseUrl) {
+    baseUrl = "http://localhost:4096";
+  }
+
   const v2 = createOpencodeClient({
     baseUrl,
     directory,
