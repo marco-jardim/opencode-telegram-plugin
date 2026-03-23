@@ -27,7 +27,7 @@ import {
   handleSessionStatus,
 } from "./hooks/session.js";
 import { handlePermissionAsked } from "./hooks/permission.js";
-import { handleToolBefore, handleToolAfter } from "./hooks/tool.js";
+import { handleToolBefore, handleToolAfter, handleToolPartUpdated, handleFileEdited } from "./hooks/tool.js";
 
 // ---------------------------------------------------------------------------
 // /telegram slash command handler
@@ -330,9 +330,22 @@ export const TelegramPlugin: Plugin = async (ctx) => {
           break;
 
         // ── Part updated: full snapshot of a single part ──────────────
-        case "message.part.updated":
-          handlePartUpdated(event as PartUpdatedEvent, hookCtx);
+        case "message.part.updated": {
+          const partEvent = event as PartUpdatedEvent;
+          const partType = partEvent.properties?.part?.type;
+
+          if (partType === "tool") {
+            // Route tool parts to the tool handler for rich status display
+            handleToolPartUpdated(
+              partEvent as Parameters<typeof handleToolPartUpdated>[0],
+              hookCtx,
+            );
+          } else {
+            // Text and other parts go to the message streamer
+            handlePartUpdated(partEvent, hookCtx);
+          }
           break;
+        }
 
         // ── message.updated: metadata — track assistant message IDs
         case "message.updated":
@@ -384,6 +397,13 @@ export const TelegramPlugin: Plugin = async (ctx) => {
         case "tool.execute.after":
           handleToolAfter(
             event as Parameters<typeof handleToolAfter>[0],
+            hookCtx,
+          );
+          break;
+
+        case "file.edited":
+          handleFileEdited(
+            event as Parameters<typeof handleFileEdited>[0],
             hookCtx,
           );
           break;
