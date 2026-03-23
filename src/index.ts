@@ -154,39 +154,52 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   const { client, directory, serverUrl } = ctx;
 
   // ── Create v2 SDK client (flat params, agent optional on shell) ─────────
-  // Strategy: extract the working baseUrl from the v1 client's HTTP config,
-  // try serverUrl.href, and fall back to localhost:4096.
-  let baseUrl: string = "";
+  // The serverUrl from plugin context may be an internal hostname (e.g.
+  // "opencode.internal") that doesn't resolve via normal DNS.  We probe
+  // candidates in order and use the first one that responds.
 
-  // 1. Try v1 client's internal HTTP client config (most reliable)
-  try {
-    const v1Config = (client as any)?._client?.getConfig?.();
-    if (v1Config?.baseUrl && typeof v1Config.baseUrl === "string") {
-      baseUrl = v1Config.baseUrl;
-    }
-  } catch {
-    // ignored
-  }
-
-  // 2. Try serverUrl (URL object from plugin context)
-  if (!baseUrl) {
+  async function probeUrl(url: string): Promise<boolean> {
     try {
-      if (typeof serverUrl === "object" && "href" in serverUrl) {
-        // Use href (full URL) and strip trailing slash
-        baseUrl = String(serverUrl.href).replace(/\/$/, "");
-      } else if (typeof serverUrl === "string") {
-        baseUrl = serverUrl.replace(/\/$/, "");
-      } else {
-        baseUrl = String(serverUrl).replace(/\/$/, "");
-      }
+      const resp = await fetch(url + "/session", {
+        method: "GET",
+        signal: AbortSignal.timeout(2000),
+      });
+      return resp.ok || resp.status === 200;
     } catch {
-      // ignored
+      return false;
     }
   }
 
-  // 3. Final fallback
-  if (!baseUrl) {
-    baseUrl = "http://localhost:4096";
+  // Build candidate list (order matters)
+  const candidates: string[] = [];
+
+  // 1. serverUrl from plugin context
+  try {
+    if (serverUrl && typeof serverUrl === "object" && "href" in serverUrl) {
+      const href = String(serverUrl.href).replace(/\/$/, "");
+      if (href) candidates.push(href);
+    }
+  } catch { /* ignored */ }
+
+  // 2. Try extracting from v1 client internal config
+  try {
+    const v1Url = (client as any)?._client?.getConfig?.()?.baseUrl;
+    if (v1Url && typeof v1Url === "string" && !candidates.includes(v1Url)) {
+      candidates.push(v1Url);
+    }
+  } catch { /* ignored */ }
+
+  // 3. Hardcoded fallback (OpenCode default)
+  if (!candidates.includes("http://localhost:4096")) {
+    candidates.push("http://localhost:4096");
+  }
+
+  let baseUrl = candidates[candidates.length - 1]; // default to last (localhost)
+  for (const candidate of candidates) {
+    if (await probeUrl(candidate)) {
+      baseUrl = candidate;
+      break;
+    }
   }
 
   const v2 = createOpencodeClient({
@@ -254,7 +267,7 @@ export const TelegramPlugin: Plugin = async (ctx) => {
   await v2.app.log({
     service: "telegram-plugin",
     level: "info",
-    message: "Initializing Telegram bot (token: " + maskedToken + ", source: " + config.tokenSource + ", allowed_users: " + (config.allowedUsers || "all") + ", baseUrl: " + baseUrl + ")",
+    message: "Initializing Telegram bot (token: " + maskedToken + ", source: " + config.tokenSource + ", allowed_users: " + (config.allowedUsers || "all") + ", baseUrl: " + baseUrl + ", candidates: " + candidates.join(" | ") + ")",
   });
 
   let bot: ReturnType<typeof createBot>;
