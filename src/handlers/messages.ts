@@ -31,10 +31,10 @@ function getClient(): OpencodeClient {
  */
 async function tryAutoAttach(chatId: number): Promise<string | null> {
   try {
-    const { data: sessions } = await getClient().session.list();
-    if (!sessions || sessions.length === 0) return null;
+    const result = await getClient().session.list();
+    if (result.error || !result.data || result.data.length === 0) return null;
 
-    const latest = [...sessions].sort(
+    const latest = [...result.data].sort(
       (a, b) => ((b as any).time?.created ?? 0) - ((a as any).time?.created ?? 0),
     )[0]!;
 
@@ -105,11 +105,21 @@ async function tryPermissionReply(ctx: Context, chatId: number, text: string): P
   if (!targetPerm) return false;
 
   try {
-    await getClient().permission.respond({
+    const result = await getClient().permission.respond({
       sessionID: targetPerm.sessionId,
       permissionID: targetPerm.permissionId,
       response: reply,
     });
+
+    const sdkErr = (result as any)?.error;
+    if (sdkErr) {
+      const errMsg = typeof sdkErr === "string" ? sdkErr
+        : sdkErr?.message ?? sdkErr?.code ?? "Unknown error";
+      await safeSend(() =>
+        ctx.reply(`❌ Permission reply failed: ${escapeHtml(String(errMsg))}`, { parse_mode: "HTML" }),
+      );
+      return true; // consumed the message even if reply failed
+    }
 
     state.pendingPermissions.delete(targetPerm.permissionId);
     await safeSend(() =>
@@ -206,6 +216,8 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   const chatState = getChatState(chatId);
 
   try {
+    // Fire-and-forget — response streams via event hooks, not here.
+    // Check for SDK-level errors (ThrowOnError=false returns { error }).
     void getClient()
       .session.prompt({
         sessionID: capturedSessionId,
@@ -216,6 +228,14 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
             modelID: chatState.selectedModel.modelID,
           },
         } : {}),
+      })
+      .then(async (result: any) => {
+        if (result?.error) {
+          const errMsg = result.error?.message ?? result.error?.code ?? JSON.stringify(result.error);
+          await safeSend(() =>
+            ctx.reply(`❌ Error sending prompt: ${escapeHtml(String(errMsg))}`, { parse_mode: "HTML" }),
+          );
+        }
       })
       .catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);

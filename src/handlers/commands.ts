@@ -62,6 +62,33 @@ function getClient(): OpencodeClient {
 }
 
 // ---------------------------------------------------------------------------
+// V2 SDK error helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a human-readable error message from a v2 SDK response.
+ * The SDK returns { data, error, request, response } with ThrowOnError=false.
+ */
+function sdkError(result: { error?: unknown; response?: { status?: number } }): string | null {
+  if (!result.error) return null;
+  const err = result.error;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const e = err as Record<string, unknown>;
+    // ConnectionRefused, network errors
+    if (e.message) return String(e.message);
+    if (e.code) return `${e.code}`;
+    // HTTP error with body
+    if (e.data && typeof e.data === "object") {
+      const d = e.data as Record<string, unknown>;
+      if (d.message) return String(d.message);
+    }
+  }
+  const status = result.response?.status;
+  return status ? `HTTP ${status}` : "Unknown SDK error";
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -150,7 +177,15 @@ export async function startCommand(ctx: Context): Promise<void> {
   if (!autoAttach) return;
 
   try {
-    const { data: sessions } = await getClient().session.list();
+    const result = await getClient().session.list();
+    const errMsg = sdkError(result as any);
+    if (errMsg) {
+      await safeSend(() =>
+        ctx.reply(`⚠️ Auto-attach failed: ${escapeHtml(errMsg)}`, { parse_mode: "HTML" }),
+      );
+      return;
+    }
+    const sessions = result.data;
     if (!sessions || sessions.length === 0) return;
 
     const latest = sortedSessions(sessions as V2Session[], 1)[0]!;
@@ -163,8 +198,11 @@ export async function startCommand(ctx: Context): Promise<void> {
         { parse_mode: "HTML" },
       ),
     );
-  } catch {
-    // Auto-attach failure is non-fatal — the user can attach manually
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await safeSend(() =>
+      ctx.reply(`⚠️ Auto-attach error: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+    );
   }
 }
 
@@ -191,8 +229,16 @@ export async function attachCommand(ctx: Context): Promise<void> {
 
   // No session ID provided — show a picker
   try {
-    const { data: sessions } = await getClient().session.list();
-    if (!sessions || (Array.isArray(sessions) && sessions.length === 0)) {
+    const result = await getClient().session.list();
+    const errMsg = sdkError(result as any);
+    if (errMsg) {
+      await safeSend(() =>
+        ctx.reply(`❌ Failed to list sessions: ${escapeHtml(errMsg)}`, { parse_mode: "HTML" }),
+      );
+      return;
+    }
+    const sessions = result.data;
+    if (!sessions || sessions.length === 0) {
       await safeSend(() =>
         ctx.reply("No sessions found. Use /new to create one."),
       );
@@ -237,7 +283,10 @@ export async function newCommand(ctx: Context): Promise<void> {
     (typeof ctx.match === "string" ? ctx.match.trim() : "") || "Telegram Session";
 
   try {
-    const { data } = await getClient().session.create({ title });
+    const result = await getClient().session.create({ title });
+    const errMsg = sdkError(result as any);
+    if (errMsg) throw new Error(errMsg);
+    const data = result.data;
     if (!data) throw new Error("No session returned");
     startIndependentSession(chatId, data.id);
 
@@ -262,7 +311,10 @@ export async function sessionsCommand(ctx: Context): Promise<void> {
   if (!chatId) return;
 
   try {
-    const { data: sessions } = await getClient().session.list();
+    const result = await getClient().session.list();
+    const errMsg = sdkError(result as any);
+    if (errMsg) throw new Error(errMsg);
+    const sessions = result.data;
     if (!sessions || sessions.length === 0) {
       await safeSend(() =>
         ctx.reply("No sessions found. Use /new to create one."),
@@ -322,7 +374,10 @@ export async function switchCommand(ctx: Context): Promise<void> {
 
   // No ID provided — show a picker (same UX as /attach)
   try {
-    const { data: sessions } = await getClient().session.list();
+    const result = await getClient().session.list();
+    const errMsg = sdkError(result as any);
+    if (errMsg) throw new Error(errMsg);
+    const sessions = result.data;
     if (!sessions || sessions.length === 0) {
       await safeSend(() =>
         ctx.reply("No sessions found. Use /new to create one."),
@@ -380,8 +435,10 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
     // Validate provider exists, but allow any model ID (favorites may not be in models list)
     try {
-      const { data } = await getClient().config.providers();
-      const providers = (data as any)?.providers ?? [];
+      const result = await getClient().config.providers();
+      const errMsg = sdkError(result as any);
+      if (errMsg) throw new Error(errMsg);
+      const providers = (result.data as any)?.providers ?? [];
       const provider = providers.find((p: any) => p.id === providerID);
 
       if (!provider) {
@@ -420,7 +477,10 @@ export async function modelCommand(ctx: Context): Promise<void> {
 
   // /model (no args) — list available models
   try {
-    const { data } = await getClient().config.providers();
+    const result = await getClient().config.providers();
+    const errMsg2 = sdkError(result as any);
+    if (errMsg2) throw new Error(errMsg2);
+    const data = result.data;
     const providers = (data as any)?.providers ?? [];
 
     if (providers.length === 0) {
@@ -660,9 +720,12 @@ export async function diffCommand(ctx: Context): Promise<void> {
   }
 
   try {
-    const { data: diffs } = await getClient().session.diff({
+    const result = await getClient().session.diff({
       sessionID: sessionId,
     });
+    const errMsg = sdkError(result as any);
+    if (errMsg) throw new Error(errMsg);
+    const diffs = result.data;
 
     if (!diffs || (diffs as any[]).length === 0) {
       await safeSend(() => ctx.reply("No file changes in this session."));
@@ -746,10 +809,13 @@ export async function messagesCommand(ctx: Context): Promise<void> {
   const limit = Number.isFinite(limitArg) && limitArg > 0 ? Math.min(limitArg, 20) : 5;
 
   try {
-    const { data: messages } = await getClient().session.messages({
+    const result = await getClient().session.messages({
       sessionID: sessionId,
       limit,
     });
+    const errMsg = sdkError(result as any);
+    if (errMsg) throw new Error(errMsg);
+    const messages = result.data;
 
     if (!messages || (messages as any[]).length === 0) {
       await safeSend(() => ctx.reply("No messages in this session."));
@@ -875,11 +941,13 @@ export async function ocShareCommand(ctx: Context): Promise<void> {
   }
 
   try {
-    const { data } = await getClient().session.share({
+    const result = await getClient().session.share({
       sessionID: sessionId,
     });
+    const errMsg = sdkError(result as any);
+    if (errMsg) throw new Error(errMsg);
 
-    const url = (data as any)?.share?.url;
+    const url = (result.data as any)?.share?.url;
     if (url) {
       await safeSend(() =>
         ctx.reply(`🔗 Session shared:\n${url}`),
@@ -901,7 +969,10 @@ export async function ocShareCommand(ctx: Context): Promise<void> {
 
 export async function commandsCommand(ctx: Context): Promise<void> {
   try {
-    const { data: commands } = await getClient().command.list();
+    const result = await getClient().command.list();
+    const errMsg = sdkError(result as any);
+    if (errMsg) throw new Error(errMsg);
+    const commands = result.data;
 
     if (!commands || commands.length === 0) {
       await safeSend(() => ctx.reply("No OpenCode commands available."));
@@ -963,8 +1034,10 @@ export async function ocGenericCommand(commandName: string, ctx: Context): Promi
  */
 export async function discoverCommands(): Promise<OpenCodeCommand[]> {
   try {
-    const { data } = await getClient().command.list();
-    return data ?? [];
+    const result = await getClient().command.list();
+    const errMsg = sdkError(result as any);
+    if (errMsg) return [];
+    return result.data ?? [];
   } catch {
     return [];
   }
