@@ -668,34 +668,38 @@ export async function executeShell(ctx: Context, chatId: number, command: string
   );
 
   try {
-    const result = await getClient().session.shell({
-      path: { id: sessionId },
-      body: { agent: "default", command },
-    });
+    // Use session.prompt with a shell instruction — session.shell() requires
+    // a valid agent name which we don't reliably know. The prompt approach
+    // lets the AI execute the command via its bash tool.
+    const chatState = getChatState(chatId);
+    const promptBody: {
+      parts: [{ type: "text"; text: string }];
+      model?: { providerID: string; modelID: string };
+      effort?: string;
+    } = {
+      parts: [{ type: "text", text: `Run this shell command and show me the output. Do not explain, just run it:\n\`\`\`\n${command}\n\`\`\`` }],
+    };
 
-    // Debug: show what the API returned
-    const data = result?.data;
-    if (data && typeof data === "object") {
-      const keys = Object.keys(data);
-      await safeSend(() =>
-        ctx.reply(
-          `<i>[debug] shell returned keys: ${escapeHtml(JSON.stringify(keys))}, id=${escapeHtml(String((data as any).id ?? "none"))}</i>`,
-          { parse_mode: "HTML" },
-        ),
-      );
-    } else {
-      await safeSend(() =>
-        ctx.reply(`<i>[debug] shell returned: ${escapeHtml(JSON.stringify(result).slice(0, 500))}</i>`, { parse_mode: "HTML" }),
-      );
+    if (chatState.selectedModel) {
+      promptBody.model = {
+        providerID: chatState.selectedModel.providerID,
+        modelID: chatState.selectedModel.modelID,
+      };
     }
+
+    void getClient().session.prompt({
+      path: { id: sessionId },
+      body: promptBody,
+    }).catch(async (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      await safeSend(() =>
+        ctx.reply(`❌ Shell error: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
+      );
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const stack = err instanceof Error ? err.stack?.slice(0, 300) : "";
     await safeSend(() =>
-      ctx.reply(
-        `❌ Shell error: ${escapeHtml(msg)}${stack ? `\n<pre>${escapeHtml(stack)}</pre>` : ""}`,
-        { parse_mode: "HTML" },
-      ),
+      ctx.reply(`❌ Shell error: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
   }
 }
