@@ -140,7 +140,7 @@ Reply <code>YES</code>, <code>NO</code>, or <code>ALWAYS</code> to a permission 
  */
 function sortedSessions(sessions: V2Session[], limit = 10): V2Session[] {
   return [...sessions]
-    .sort((a, b) => (b.time?.created ?? 0) - (a.time?.created ?? 0))
+    .sort((a, b) => (b.time?.updated ?? b.time?.created ?? 0) - (a.time?.updated ?? a.time?.created ?? 0))
     .slice(0, limit);
 }
 

@@ -35,7 +35,7 @@ async function tryAutoAttach(chatId: number): Promise<string | null> {
     if (result.error || !result.data || result.data.length === 0) return null;
 
     const latest = [...result.data].sort(
-      (a, b) => ((b as any).time?.created ?? 0) - ((a as any).time?.created ?? 0),
+      (a, b) => ((b as any).time?.updated ?? (b as any).time?.created ?? 0) - ((a as any).time?.updated ?? (a as any).time?.created ?? 0),
     )[0]!;
 
     attachSession(chatId, latest.id);
