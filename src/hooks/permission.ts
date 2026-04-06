@@ -108,10 +108,13 @@ function normalizePermission(
     }
 
     if (parts.length === 0) {
-      // Fallback: dump all string values from metadata
+      // Fallback: dump all values from metadata
       for (const [k, v] of Object.entries(meta)) {
-        if (typeof v === "string" && v.length < 200) {
-          parts.push(`${k}: ${v}`);
+        const val = typeof v === "string" ? v
+          : typeof v === "object" && v !== null ? JSON.stringify(v).slice(0, 200)
+          : String(v);
+        if (val.length < 200) {
+          parts.push(`${k}: ${val}`);
         }
       }
     }
@@ -172,10 +175,8 @@ function sendPermissionMessage(
       .text("❌ Deny", denyKey);
 
     const messageText =
-      `🔐 <b>Permission requested</b>\n\n` +
-      `<b>Tool:</b> <code>${escapeHtml(toolName)}</code>\n` +
-      escapeHtml(description) +
-      `\n\n<i>Reply YES, ALWAYS, or NO</i>`;
+      `🔐 <b>${escapeHtml(toolName)}</b>\n` +
+      escapeHtml(description);
 
     void (async () => {
       const result = await safeSend(() =>

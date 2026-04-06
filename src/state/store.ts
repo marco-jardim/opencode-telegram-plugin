@@ -26,6 +26,7 @@ export interface SelectedModel {
 }
 
 export type EffortLevel = "low" | "medium" | "high";
+export type CavemanLevel = "off" | "lite" | "full" | "ultra";
 
 export interface ChatState {
   chatId: number;
@@ -34,6 +35,8 @@ export interface ChatState {
   independentSessionId: string | null;
   selectedModel: SelectedModel | null;
   effort: EffortLevel;
+  showThinking: boolean;
+  caveman: CavemanLevel;
   stream: StreamTracker;
   pendingPermissions: Map<string, PendingPermission>;
   typingStop: (() => void) | null;
@@ -72,6 +75,8 @@ function makeDefaultChatState(chatId: number): ChatState {
     independentSessionId: null,
     selectedModel: null,
     effort: "high",
+    showThinking: false,
+    caveman: "off",
     stream: makeDefaultStream(),
     pendingPermissions: new Map(),
     typingStop: null,
@@ -145,6 +150,19 @@ export function resolveCallback(key: string): CallbackEntry | null {
   if (Date.now() > entry.expiresAt) return null;
 
   return entry;
+}
+
+// ---------------------------------------------------------------------------
+// Suppress tool event handler during direct shell command execution
+// ---------------------------------------------------------------------------
+let suppressToolEventsUntil = 0;
+
+export function suppressToolEvents(ms: number): void {
+  suppressToolEventsUntil = Date.now() + ms;
+}
+
+export function isToolEventSuppressed(): boolean {
+  return Date.now() < suppressToolEventsUntil;
 }
 
 export function cleanExpiredCallbacks(): void {

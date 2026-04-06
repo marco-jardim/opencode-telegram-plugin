@@ -1,10 +1,63 @@
 import type { Context } from "grammy";
 import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { getActiveSessionId, attachSession } from "../state/mode.js";
-import { getChatState } from "../state/store.js";
+import { getChatState, type CavemanLevel } from "../state/store.js";
 import { safeSend } from "../utils/safeSend.js";
 import { escapeHtml } from "../utils/format.js";
 import { executeShell } from "./commands.js";
+
+// ---------------------------------------------------------------------------
+// Caveman prompts — match commands.ts CAVEMAN_PROMPTS
+// Based on JuliusBrussee/caveman SKILL.md
+// ---------------------------------------------------------------------------
+
+const CAVEMAN_PROMPTS: Record<CavemanLevel, string> = {
+  off: "",
+  lite: `CAVEMAN MODE (lite):
+- Drop filler: just, really, basically, actually, simply
+- Drop pleasantries: sure, certainly, happy to help
+- No hedging: skip "it might be worth considering"
+- Short synonyms: big not extensive, fix not "implement a solution"
+- Keep grammar. Technical terms exact. Code unchanged.
+
+`,
+  full: `CAVEMAN MODE — follow these rules for this response:
+
+CORE: Drop articles (a, an, the). Drop filler. Drop pleasantries. Keep all technical substance.
+
+GRAMMAR:
+- Drop articles (a, an, the)
+- Drop filler: just, really, basically, actually, simply
+- Drop pleasantries: sure, certainly, of course, happy to
+- Short synonyms: big not extensive, fix not "implement a solution for"
+- No hedging: skip "it might be worth considering"
+- Fragments fine. No need full sentence.
+- Technical terms stay exact. "Polymorphism" stays "polymorphism"
+- Code blocks unchanged. Caveman speak around code, not in code
+- Error messages quoted exact
+
+PATTERN: [thing] [action] [reason]. [next step].
+NOT: "Sure! I'd be happy to help. The issue is likely caused by..."
+YES: "Bug in auth middleware. Token expiry check use < not <=. Fix:"
+
+BOUNDARIES:
+- Code: write normal. Caveman English only.
+- Technical terms: exact.
+- Error messages: quoted exact.
+
+`,
+  ultra: `CAVEMAN MODE (ultra) — MAXIMUM COMPRESSION:
+
+- Telegraphic style only. Minimum words possible.
+- Use symbols: → = ≠
+- Abbreviate: obj, ref, impl, config, req, resp
+- Drop articles, filler, pleasantries, hedging
+- Fragments. No full sentences needed.
+- Technical terms exact. Code unchanged.
+- Pattern: thing → action → reason. next step.
+
+`,
+};
 
 // ---------------------------------------------------------------------------
 // Client — v2 SDK (flat parameter style)
@@ -24,6 +77,30 @@ function getClient(): OpencodeClient {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Extract a human-readable error string from v2 SDK responses.
+ * Handles: string, object with message/code, array of validation errors.
+ */
+function extractSdkError(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (Array.isArray(err)) {
+    return err
+      .map((e: any) => {
+        const path = e.path ? e.path.join(".") : "";
+        const msg = e.message ?? e.code ?? JSON.stringify(e);
+        return path ? `${path}: ${msg}` : msg;
+      })
+      .join("; ");
+  }
+  if (err && typeof err === "object") {
+    const e = err as Record<string, unknown>;
+    if (e.message) return String(e.message);
+    if (e.code) return String(e.code);
+    return JSON.stringify(err);
+  }
+  return String(err);
+}
 
 /**
  * Attempt to auto-attach to the most recently created session.
@@ -190,10 +267,7 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
 
   if (!sessionId) {
     await safeSend(() =>
-      ctx.reply(
-        "No active session.\n" +
-          "Use /attach to connect to an existing session or /new to create one.",
-      ),
+      ctx.reply("No active session. Use /attach or /new."),
     );
     return;
   }
@@ -215,13 +289,16 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
   // Build prompt body with optional model/effort overrides
   const chatState = getChatState(chatId);
 
+  // Caveman: prepend instruction to user text only — no system parts, TUI stays clean
+  const cavemanPrefix = chatState.caveman !== "off" ? CAVEMAN_PROMPTS[chatState.caveman] + "\n\n" : "";
+
   try {
     // Fire-and-forget — response streams via event hooks, not here.
     // Check for SDK-level errors (ThrowOnError=false returns { error }).
     void getClient()
       .session.prompt({
         sessionID: capturedSessionId,
-        parts: [{ type: "text" as const, text }],
+        parts: [{ type: "text" as const, text: cavemanPrefix + text }],
         ...(chatState.selectedModel ? {
           model: {
             providerID: chatState.selectedModel.providerID,
@@ -231,20 +308,56 @@ export async function handleTextMessage(ctx: Context): Promise<void> {
       })
       .then(async (result: any) => {
         if (result?.error) {
-          const errMsg = result.error?.message ?? result.error?.code ?? JSON.stringify(result.error);
+          const errStr = extractSdkError(result.error);
+
+          if (errStr.includes("ProviderModelNotFoundError") || errStr.includes("provider model not found")) {
+            await safeSend(() =>
+              ctx.reply(
+                `⚠️ Model error: ${escapeHtml(errStr)}\n\n` +
+                `Check that the model is available. Use <code>/model provider/id</code> to change.`,
+                { parse_mode: "HTML" },
+              ),
+            );
+            return;
+          }
+
           await safeSend(() =>
-            ctx.reply(`❌ Error sending prompt: ${escapeHtml(String(errMsg))}`, { parse_mode: "HTML" }),
+            ctx.reply(`❌ Error sending prompt: ${escapeHtml(errStr)}`, { parse_mode: "HTML" }),
           );
         }
       })
       .catch(async (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
+
+        if (msg.includes("ProviderModelNotFoundError") || msg.includes("provider model not found")) {
+          await safeSend(() =>
+            ctx.reply(
+              `⚠️ Model error: ${escapeHtml(msg)}\n\n` +
+              `Check that the model is available. Use <code>/model provider/id</code> to change.`,
+              { parse_mode: "HTML" },
+            ),
+          );
+          return;
+        }
+
         await safeSend(() =>
           ctx.reply(`❌ Error sending prompt: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
         );
       });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+
+    if (msg.includes("ProviderModelNotFoundError") || msg.includes("provider model not found")) {
+      await safeSend(() =>
+        ctx.reply(
+          `⚠️ Model error: ${escapeHtml(msg)}\n\n` +
+          `Check that the model is available. Use <code>/model provider/id</code> to change.`,
+          { parse_mode: "HTML" },
+        ),
+      );
+      return;
+    }
+
     await safeSend(() =>
       ctx.reply(`❌ Error sending prompt: ${escapeHtml(msg)}`, { parse_mode: "HTML" }),
     );
