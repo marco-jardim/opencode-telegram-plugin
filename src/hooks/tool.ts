@@ -1,5 +1,5 @@
 import type { Api, RawApi } from "grammy";
-import { getAllChatIds, getChatState } from "../state/store.js";
+import { getAllChatIds, getChatState, isToolEventSuppressed } from "../state/store.js";
 import { getActiveSessionId } from "../state/mode.js";
 import { escapeHtml } from "../utils/format.js";
 import { safeSend } from "../utils/safeSend.js";
@@ -194,6 +194,9 @@ export function handleToolPartUpdated(
   const { api } = ctx;
   const key = toolKey(part.id);
 
+  // Skip tool parts already handled by direct shell command execution
+  if (isToolEventSuppressed()) return;
+
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== part.sessionID) continue;
 
@@ -212,12 +215,11 @@ export function handleToolPartUpdated(
         const command = isBashTool(part.tool) ? extractCommand(part.state.input) : null;
 
         let msgText = `🔧 <b>${escapeHtml(title)}</b>`;
-        if (filePath) {
-          msgText += `\n📄 <code>${escapeHtml(filePath)}</code>`;
-        }
         if (command) {
-          const cmdPreview = command.length > 500 ? command.slice(0, 500) + "…" : command;
-          msgText += `\n<pre>$ ${escapeHtml(cmdPreview)}</pre>`;
+          const cmdPreview = command.length > 200 ? command.slice(0, 200) + "…" : command;
+          msgText += `\n<code>${escapeHtml(cmdPreview)}</code>`;
+        } else if (filePath) {
+          msgText += `\n<code>${escapeHtml(filePath)}</code>`;
         }
 
         void (async () => {
@@ -252,32 +254,26 @@ export function handleToolPartUpdated(
         const isBash = isBashTool(part.tool);
         const command = isBash ? extractCommand(part.state.input) : null;
 
-        let body = `✅ <b>${escapeHtml(title)}</b>`;
+        let body = `✅ <b>${escapeHtml(title)}</b> <i>(${durationStr})</i>`;
         if (filePath) {
-          body += `\n📄 <code>${escapeHtml(filePath)}</code>`;
-        }
-        body += ` <i>(${durationStr})</i>`;
-
-        if (isBash && command) {
-          const cmdPreview = command.length > 500 ? command.slice(0, 500) + "…" : command;
-          body += `\n<pre>$ ${escapeHtml(cmdPreview)}</pre>`;
+          body += `\n<code>${escapeHtml(filePath)}</code>`;
         }
 
-        // For edit tools, show the diff from input (oldString → newString)
+        // For edit tools, show a compact diff summary
         if (isEdit) {
           const diff = buildEditDiff(part.state.input);
           if (diff) {
-            const maxLen = 3500 - body.length;
-            const truncated = diff.length > maxLen ? diff.slice(0, maxLen) + "\n…(truncated)" : diff;
+            const maxLen = 500;
+            const truncated = diff.length > maxLen ? diff.slice(0, maxLen) + "\n…" : diff;
             body += `\n<pre>${escapeHtml(truncated)}</pre>`;
           }
         }
 
-        // For bash tools, show the command output
+        // For bash tools, show truncated output
         if (isBash && output.trim()) {
-          const maxLen = 3500 - body.length;
+          const maxLen = 500;
           const outTrimmed = output.trim();
-          const truncated = outTrimmed.length > maxLen ? outTrimmed.slice(0, maxLen) + "\n…(truncated)" : outTrimmed;
+          const truncated = outTrimmed.length > maxLen ? outTrimmed.slice(0, maxLen) + "\n…" : outTrimmed;
           body += `\n<pre>${escapeHtml(truncated)}</pre>`;
         }
 

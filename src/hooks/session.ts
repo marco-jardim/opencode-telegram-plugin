@@ -30,7 +30,7 @@ async function finalizeAndCleanup(chatId: number, api: Api<RawApi>): Promise<voi
   await gracefulFinalizeStream(chatId);
   cleanupChatStream(chatId);
   await safeSend(() =>
-    api.sendMessage(chatId, "💤 <i>Session idle</i>", {
+    api.sendMessage(chatId, "⏸ <i>idle</i>", {
       parse_mode: "HTML",
     }),
   );
@@ -52,7 +52,7 @@ export function handleSessionCreated(
     void safeSend(() =>
       api.sendMessage(
         chatId,
-        `🚀 <b>Session started</b>\n<code>${displayName}</code>`,
+        `🚀 ${displayName}`,
         { parse_mode: "HTML" },
       ),
     );
@@ -95,7 +95,7 @@ export function handleSessionError(
       await safeSend(() =>
         api.sendMessage(
           chatId,
-          `⚠️ <b>Error:</b> <code>${escapeHtml(error)}</code>`,
+          `⚠️ <code>${escapeHtml(error)}</code>`,
           { parse_mode: "HTML" },
         ),
       );
@@ -115,6 +115,10 @@ export function handleSessionStatus(
 
   // Skip empty, whitespace-only, or missing status strings to avoid noise
   if (typeof status !== "string" || !status.trim()) return;
+
+  // Only surface meaningful status changes — skip verbose intermediate states
+  const notable = ["thinking", "planning", "waiting", "error", "done", "complete", "idle"];
+  if (!notable.some((s) => status.toLowerCase().includes(s))) return;
 
   for (const chatId of attachedChatIds(sessionID)) {
     void safeSend(() =>

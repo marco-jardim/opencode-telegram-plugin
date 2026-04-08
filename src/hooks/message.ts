@@ -104,8 +104,12 @@ interface ChatStreamCtx {
   editing: boolean;
   /** True while the initial sendMessage is in-flight */
   sending: boolean;
-  /** The part ID currently being streamed — when a new part arrives, finalize and start fresh */
-  currentPartId: string | null;
+  /** The assistant message ID this stream belongs to */
+  messageID: string;
+  /** All part IDs seen so far in this stream — new parts get appended, not split */
+  partIds: Set<string>;
+  /** What type of part this is — "text" or "reasoning" */
+  partType: "text" | "reasoning";
 }
 
 const chatStreamCtx = new Map<number, ChatStreamCtx>();
@@ -135,7 +139,7 @@ export function handlePartDelta(
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-    updateChatStream(chatId, html, fullText, false, api, editIntervalMs, partID);
+    updateChatStream(chatId, html, fullText, false, api, editIntervalMs, partID, messageID, "text");
   }
 }
 
@@ -148,7 +152,7 @@ export function handlePartUpdated(
   ctx: HookContext,
 ): void {
   const { part } = event.properties;
-  if (part.type !== "text") return;
+  if (part.type !== "text" && part.type !== "reasoning") return;
   if (!isAssistantMessage(part.messageID)) return;
 
   const rawText = part.text ?? "";
@@ -164,7 +168,14 @@ export function handlePartUpdated(
 
   for (const chatId of getAllChatIds()) {
     if (getActiveSessionId(chatId) !== sessionID) continue;
-    updateChatStream(chatId, html, rawText, isFinal, api, editIntervalMs, partID);
+
+    // For reasoning parts, check if showThinking is enabled
+    if (part.type === "reasoning") {
+      const chatState = getChatState(chatId);
+      if (!chatState.showThinking) return;
+    }
+
+    updateChatStream(chatId, html, rawText, isFinal, api, editIntervalMs, partID, part.messageID, part.type as "text" | "reasoning");
   }
 
   if (isFinal) {
@@ -184,13 +195,14 @@ function updateChatStream(
   api: Api<RawApi>,
   editIntervalMs: number,
   partId: string,
+  messageID: string,
+  partType: "text" | "reasoning" = "text",
 ): void {
   let sctx = chatStreamCtx.get(chatId);
 
-  // ── New part detected: finalize the current message and start fresh ──
-  if (sctx && sctx.currentPartId !== null && sctx.currentPartId !== partId) {
-    // Finalize current stream (do last edit, stop timer, cleanup)
-    void finalizeThenStartNew(chatId, sctx, html, rawText, isFinal, api, editIntervalMs, partId);
+  // ── Different assistant message: finalize and start fresh ──
+  if (sctx && sctx.messageID !== messageID) {
+    void finalizeThenStartNew(chatId, sctx, html, rawText, isFinal, api, editIntervalMs, partId, messageID, partType);
     return;
   }
 
@@ -205,14 +217,17 @@ function updateChatStream(
       editIntervalMs,
       editing: false,
       sending: true,
-      currentPartId: partId,
+      messageID,
+      partIds: new Set([partId]),
+      partType,
     };
     chatStreamCtx.set(chatId, sctx);
     void sendInitialMessage(chatId, sctx);
     return;
   }
 
-  // Update latest text (same part)
+  // Same message — track new part, accumulate text
+  sctx.partIds.add(partId);
   sctx.latestRawText = rawText;
   sctx.latestHtml = html;
   if (isFinal) {
@@ -234,6 +249,8 @@ async function finalizeThenStartNew(
   api: Api<RawApi>,
   editIntervalMs: number,
   partId: string,
+  messageID: string,
+  partType: "text" | "reasoning" = "text",
 ): Promise<void> {
   // Mark old stream as final and do last edit
   oldSctx.isFinal = true;
@@ -284,7 +301,9 @@ async function finalizeThenStartNew(
     editIntervalMs,
     editing: false,
     sending: true,
-    currentPartId: partId,
+    messageID,
+    partIds: new Set([partId]),
+    partType,
   };
   chatStreamCtx.set(chatId, newSctx);
   void sendInitialMessage(chatId, newSctx);
@@ -301,7 +320,13 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
     chatState.typingStop = startTyping(sctx.api, chatId);
   }
 
-  const chunks = chunkMessage(sctx.latestHtml);
+  // Prepend thinking indicator for reasoning parts
+  let htmlToSend = sctx.latestHtml;
+  if (sctx.partType === "reasoning") {
+    htmlToSend = `🧠 <i>Thinking...</i>\n\n${sctx.latestHtml}`;
+  }
+
+  const chunks = chunkMessage(htmlToSend);
   if (chunks.length === 0) {
     sctx.sending = false;
     return;
@@ -313,7 +338,7 @@ async function sendInitialMessage(chatId: number, sctx: ChatStreamCtx): Promise<
   } catch {
     // Fallback to plain text
     try {
-      sentMsg = await sctx.api.sendMessage(chatId, stripHtml(sctx.latestHtml));
+      sentMsg = await sctx.api.sendMessage(chatId, stripHtml(htmlToSend));
     } catch {
       sctx.sending = false;
       cleanupStream(chatId);

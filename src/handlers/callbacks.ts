@@ -1,9 +1,10 @@
 import type { Context } from "grammy";
 import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { resolveCallback, getChatState } from "../state/store.js";
-import { attachSession } from "../state/mode.js";
+import { attachSession, startIndependentSession } from "../state/mode.js";
 import { safeSend } from "../utils/safeSend.js";
 import { escapeHtml } from "../utils/format.js";
+import { warnIfNoModel } from "./commands.js";
 
 // ---------------------------------------------------------------------------
 // Client — v2 SDK (flat parameter style)
@@ -190,6 +191,7 @@ export async function handleCallback(ctx: Context): Promise<void> {
           ctx,
           `✅ Attached to session:\n<code>${escapeHtml(sessionId)}</code>`,
         );
+        await warnIfNoModel(ctx, chatId);
         break;
       }
 

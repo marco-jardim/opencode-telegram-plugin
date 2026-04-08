@@ -12,6 +12,8 @@ import {
   switchCommand,
   modelCommand,
   effortCommand,
+  thinkingCommand,
+  cavemanCommand,
   statusCommand,
   abortCommand,
   shellCommand,
@@ -102,6 +104,8 @@ export function createBot(opts: CreateBotOptions): Bot {
   bot.command("switch", switchCommand);
   bot.command("model", modelCommand);
   bot.command("effort", effortCommand);
+  bot.command("thinking", thinkingCommand);
+  bot.command("caveman", cavemanCommand);
   bot.command("status", statusCommand);
   bot.command("abort", abortCommand);
   bot.command("shell", shellCommand);
@@ -176,6 +180,8 @@ export async function registerBotMenu(bot: Bot): Promise<void> {
     { command: "switch", description: "Switch session" },
     { command: "model", description: "List/set model" },
     { command: "effort", description: "Set reasoning effort" },
+    { command: "thinking", description: "Toggle thinking visibility" },
+    { command: "caveman", description: "Toggle caveman mode" },
     { command: "status", description: "Show bot status" },
     { command: "abort", description: "Abort current operation" },
     { command: "shell", description: "Run shell command" },
