@@ -58,8 +58,10 @@ export function markdownToTelegramHtml(md: string): string {
   // Strikethrough: ~~text~~
   text = text.replace(/~~([\s\S]+?)~~/g, "<s>$1</s>");
 
-  // Links: [text](url)
-  text = text.replace(/\[([^\]]+)\]\(((?:[^()]*|\([^()]*\))*)\)/g, '<a href="$2">$1</a>');
+  // Links: [text](url), allowing one level of balanced parens in the URL.
+  // Each repetition must start with a literal "(" so the regex cannot backtrack
+  // exponentially on a URL whose closing ")" has not streamed in yet.
+  text = text.replace(/\[([^\]]+)\]\(([^()\s]*(?:\([^()\s]*\)[^()\s]*)*)\)/g, '<a href="$2">$1</a>');
 
   // Step 4: Headers (# through ######) → <b>header text</b>
   text = text.replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>");
