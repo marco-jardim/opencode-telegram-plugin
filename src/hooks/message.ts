@@ -130,11 +130,15 @@ export function handlePartDelta(
   const fullText = appendDelta(partID, delta);
   if (!fullText.trim()) return;
 
+  // Runs synchronously on the server event loop for every delta: skip the
+  // markdown conversion entirely unless a chat is streaming this session.
+  const chatIds = [...getAllChatIds()].filter((chatId) => getActiveSessionId(chatId) === sessionID);
+  if (chatIds.length === 0) return;
+
   const { api, editIntervalMs } = ctx;
   const html = markdownToTelegramHtml(fullText);
 
-  for (const chatId of getAllChatIds()) {
-    if (getActiveSessionId(chatId) !== sessionID) continue;
+  for (const chatId of chatIds) {
     updateChatStream(chatId, html, fullText, false, api, editIntervalMs, partID);
   }
 }
@@ -160,11 +164,13 @@ export function handlePartUpdated(
   partTextAccumulator.set(partID, rawText);
 
   const isFinal = part.state === "complete";
-  const html = markdownToTelegramHtml(rawText);
+  const chatIds = [...getAllChatIds()].filter((chatId) => getActiveSessionId(chatId) === sessionID);
 
-  for (const chatId of getAllChatIds()) {
-    if (getActiveSessionId(chatId) !== sessionID) continue;
-    updateChatStream(chatId, html, rawText, isFinal, api, editIntervalMs, partID);
+  if (chatIds.length > 0) {
+    const html = markdownToTelegramHtml(rawText);
+    for (const chatId of chatIds) {
+      updateChatStream(chatId, html, rawText, isFinal, api, editIntervalMs, partID);
+    }
   }
 
   if (isFinal) {
